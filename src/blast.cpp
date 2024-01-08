@@ -198,11 +198,12 @@ struct Config
 {
     int num_zones = 100;
     int fold = 50;
+    int rk = 1;
     double tfinal = 0.0;
     double cpi = 0.0;
     std::vector<int> ts;
 };
-VISITABLE_STRUCT(Config, num_zones, fold, tfinal, cpi, ts);
+VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, ts);
 
 
 
@@ -297,9 +298,27 @@ void update_state(State& state, const Config& config)
     auto dx = 1.0 / ni;
     auto dt = dx * 0.3;
     auto s0 = state;
-    auto s1 = wgtavg(s0, next(s0, config, dt), 1.0);
-    auto s2 = wgtavg(s0, next(s1, config, dt), 0.5);
-    state = s2;
+
+    switch (config.rk)
+    {
+        case 1: {
+            state = next(s0, config, dt);
+            break;
+        }
+        case 2: {
+            auto s1 = wgtavg(s0, next(s0, config, dt), 1.0);
+            auto s2 = wgtavg(s0, next(s1, config, dt), 0.5);
+            state = s2;
+            break;
+        }
+        case 3: {
+            auto s1 = wgtavg(s0, next(s0, config, dt), 1.00);
+            auto s2 = wgtavg(s0, next(s1, config, dt), 0.25);
+            auto s3 = wgtavg(s0, next(s2, config, dt), 2./3);
+            state = s3;
+            break;
+        }
+    }
 }
 
 
