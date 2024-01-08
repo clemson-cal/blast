@@ -213,10 +213,22 @@ VISITABLE_STRUCT(Config, num_zones, fold, tfinal, cpi, ts);
 struct State
 {
     double time;
-    int iteration;
-    cons_array_t conserved;
+    double iter;
+    cons_array_t cons;
 };
-VISITABLE_STRUCT(State, time, iteration, conserved);
+VISITABLE_STRUCT(State, time, iter, cons);
+
+
+
+
+State wgtavg(const State& a, const State& b, double x)
+{
+    return {
+        (a.time * (1.0 - x) + b.time * x),
+        (a.iter * (1.0 - x) + b.iter * x),
+        (a.cons * (1.0 - x) + b.cons * x).cache()
+    };
+}
 
 
 
@@ -229,14 +241,15 @@ using DiagnosticData = prim_array_t;
 
 
 
-void update_state(State& state, const Config& config, prim_array_t& primitive)
+State next(const State& state, const Config& config, double dt)
 {
+    static prim_array_t primitive;
+
     auto ni = config.num_zones;
     auto dx = 1.0 / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
-    auto dt = dx * 0.3;
-    auto u = state.conserved;
+    auto u = state.cons;
     auto interior_faces = index_space(ivec(1), uvec(ni - 1));
     auto interior_cells = index_space(ivec(1), uvec(ni - 2));
 
@@ -268,9 +281,25 @@ void update_state(State& state, const Config& config, prim_array_t& primitive)
         return (fp - fm) * (-dt / dx);
     });
 
-    state.time += dt;
-    state.iteration += 1;
-    state.conserved = (u.at(interior_cells) + du).cache();
+    return State{
+        state.time + dt,
+        state.iter + 1.0,
+        (u.at(interior_cells) + du).cache(),
+    };
+}
+
+
+
+
+void update_state(State& state, const Config& config)
+{
+    auto ni = config.num_zones;
+    auto dx = 1.0 / ni;
+    auto dt = dx * 0.3;
+    auto s0 = state;
+    auto s1 = wgtavg(s0, next(s0, config, dt), 1.0);
+    auto s2 = wgtavg(s0, next(s1, config, dt), 0.5);
+    state = s2;
 }
 
 
@@ -288,7 +317,7 @@ public:
     }
     uint get_iteration(const State& state) const override
     {
-        return state.iteration;
+        return uint(state.iter);
     }
     void initial_state(State& state) const override
     {
@@ -305,12 +334,12 @@ public:
         auto xc = (ic + 0.5) * dx;
 
         state.time = 0.0;
-        state.iteration = 0;
-        state.conserved = xc.map(initial_conserved).cache();
+        state.iter = 0.0;
+        state.cons = xc.map(initial_conserved).cache();
     }
     void update(State& state) const override
     {
-        update_state(state, config, primitive);
+        update_state(state, config);
     }
     bool should_continue(const State& state) const override
     {
@@ -331,8 +360,6 @@ public:
             get_time(state),
             1e-6 * config.num_zones / secs_per_update);
     }
-private:
-    mutable prim_array_t primitive;
 };
 
 
