@@ -37,6 +37,8 @@ using namespace vapor;
  */
 using cons_t = vec_t<double, 3>;
 using prim_t = vec_t<double, 3>;
+using cons_array_t = memory_backed_array_t<1, cons_t, ref_counted_ptr_t>;
+using prim_array_t = memory_backed_array_t<1, prim_t, ref_counted_ptr_t>;
 
 
 
@@ -211,7 +213,7 @@ struct State
 {
     double time;
     int iteration;
-    memory_backed_array_t<1, cons_t, ref_counted_ptr_t> conserved;
+    cons_array_t conserved;
 };
 VISITABLE_STRUCT(State, time, iteration, conserved);
 
@@ -221,7 +223,54 @@ VISITABLE_STRUCT(State, time, iteration, conserved);
 /**
  * 
  */
-using DiagnosticData = memory_backed_array_t<1, prim_t, ref_counted_ptr_t>;
+using DiagnosticData = prim_array_t;
+
+
+
+
+void update_state(State& state, const Config& config, prim_array_t& primitive)
+{
+    auto ni = config.num_zones;
+    auto dx = 1.0 / ni;
+    auto iv = range(ni + 1);
+    auto ic = range(ni);
+    auto dt = dx * 0.3;
+    auto u = state.conserved;
+    auto interior_faces = index_space(ivec(1), uvec(ni - 1));
+    auto interior_cells = index_space(ivec(1), uvec(ni - 2));
+
+    if (primitive.size() == 0)
+    {
+        primitive = zeros<prim_t>(u.space()).cache();
+    }
+
+    primitive = ic.map([p=primitive, u] HD (int i)
+    {
+        auto ui = u[i];
+        auto pi = p[i];
+        return cons_to_prim(ui, pi[2]);
+    }).cache();
+
+    auto fhat = iv[interior_faces].map([p=primitive, u] HD (int i)
+    {
+        auto ul = u[i - 1];
+        auto ur = u[i];
+        auto pl = p[i - 1];
+        auto pr = p[i];
+        return riemann_hlle(pl, pr, ul, ur);
+    }).cache();
+
+    auto du = ic[interior_cells].map([fhat, dt, dx] HD (int i)
+    {
+        auto fm = fhat[i];
+        auto fp = fhat[i + 1];
+        return (fp - fm) * (-dt / dx);
+    });
+
+    state.time += dt;
+    state.iteration += 1;
+    state.conserved = (u.at(interior_cells) + du).cache();
+}
 
 
 
@@ -260,46 +309,7 @@ public:
     }
     void update(State& state) const override
     {
-        auto ni = config.num_zones;
-        auto dx = 1.0 / ni;
-        auto iv = range(ni + 1);
-        auto ic = range(ni);
-        auto dt = dx * 0.3;
-        auto u = state.conserved;
-        auto interior_faces = index_space(ivec(1), uvec(ni - 1));
-        auto interior_cells = index_space(ivec(1), uvec(ni - 2));
-
-        if (primitive.size() == 0)
-        {
-            primitive = zeros<prim_t>(u.space()).cache();
-        }
-
-        primitive = ic.map([p=primitive, u] HD (int i)
-        {
-            auto ui = u[i];
-            auto pi = p[i];
-            return cons_to_prim(ui, pi[2]);
-        }).cache();
-
-        auto fhat = iv[interior_faces].map([p=primitive, u] HD (int i)
-        {
-            auto ul = u[i - 1];
-            auto ur = u[i];
-            auto pl = p[i - 1];
-            auto pr = p[i];
-            return riemann_hlle(pl, pr, ul, ur);
-        }).cache();
-
-        auto du = ic[interior_cells].map([fhat, dt, dx] HD (int i)
-        {
-            auto fm = fhat[i];
-            auto fp = fhat[i + 1];
-            return (fp - fm) * (-dt / dx);
-        });
-
-        state.time += dt;
-        state.iteration += 1;
-        state.conserved = (u.at(interior_cells) + du).cache();
+        update_state(state, config, primitive);
     }
     bool should_continue(const State& state) const override
     {
@@ -311,7 +321,7 @@ public:
     }
     uint updates_per_batch() const override
     {
-        return 10;
+        return 50;
     }
     vec_t<char, 256> status_message(const State& state, double secs_per_update) const override
     {
@@ -321,7 +331,7 @@ public:
             1e-6 * config.num_zones / secs_per_update);
     }
 private:
-    mutable memory_backed_array_t<1, prim_t, ref_counted_ptr_t> primitive;
+    mutable prim_array_t primitive;
 };
 
 
