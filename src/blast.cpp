@@ -39,6 +39,7 @@ using cons_t = vec_t<double, 3>;
 using prim_t = vec_t<double, 3>;
 using cons_array_t = memory_backed_array_t<1, cons_t, ref_counted_ptr_t>;
 using prim_array_t = memory_backed_array_t<1, prim_t, ref_counted_ptr_t>;
+using Product = memory_backed_array_t<1, double, ref_counted_ptr_t>;
 
 
 
@@ -201,9 +202,12 @@ struct Config
     int rk = 1;
     double tfinal = 0.0;
     double cpi = 0.0;
-    std::vector<int> ts;
+    double spi = 0.0;
+    double tsi = 0.0;
+    std::vector<uint> sp;
+    std::vector<uint> ts;
 };
-VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, ts);
+VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts);
 
 
 
@@ -222,7 +226,7 @@ VISITABLE_STRUCT(State, time, iter, cons);
 
 
 
-State wgtavg(const State& a, const State& b, double x)
+State average(const State& a, const State& b, double x)
 {
     return {
         (a.time * (1.0 - x) + b.time * x),
@@ -251,8 +255,8 @@ State next(const State& state, const Config& config, double dt)
     auto iv = range(ni + 1);
     auto ic = range(ni);
     auto u = state.cons;
-    auto interior_faces = index_space(ivec(1), uvec(ni - 1));
-    auto interior_cells = index_space(ivec(1), uvec(ni - 2));
+    auto interior_faces = iv.space().contract(1);
+    auto interior_cells = ic.space().contract(1);
 
     if (primitive.space() != u.space())
     {
@@ -292,6 +296,18 @@ State next(const State& state, const Config& config, double dt)
 
 
 
+auto cell_coordinates(const Config& config)
+{
+    auto ni = config.num_zones;
+    auto dx = 1.0 / ni;
+    auto ic = range(ni);
+    auto xc = (ic + 0.5) * dx;
+    return xc;
+}
+
+
+
+
 void update_state(State& state, const Config& config)
 {
     auto ni = config.num_zones;
@@ -306,15 +322,15 @@ void update_state(State& state, const Config& config)
             break;
         }
         case 2: {
-            auto s1 = wgtavg(s0, next(s0, config, dt), 1.0);
-            auto s2 = wgtavg(s0, next(s1, config, dt), 0.5);
+            auto s1 = average(s0, next(s0, config, dt), 1.0);
+            auto s2 = average(s0, next(s1, config, dt), 0.5);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = wgtavg(s0, next(s0, config, dt), 1.00);
-            auto s2 = wgtavg(s0, next(s1, config, dt), 0.25);
-            auto s3 = wgtavg(s0, next(s2, config, dt), 2./3);
+            auto s1 = average(s0, next(s0, config, dt), 1.00);
+            auto s2 = average(s0, next(s1, config, dt), 0.25);
+            auto s3 = average(s0, next(s2, config, dt), 2./3);
             state = s3;
             break;
         }
@@ -327,16 +343,28 @@ void update_state(State& state, const Config& config)
 /**
  * 
  */
-class Blast : public Simulation<Config, State, DiagnosticData>
+class Blast : public Simulation<Config, State, Product>
 {
 public:
+    const char* name() const override
+    {
+        return "blast";
+    }
+    const char* author() const override
+    {
+        return "Jonathan Zrake (Clemson)";
+    }
+    const char* description() const override
+    {
+        return "GPU-accelerated hydrodynamics code for relativistic explosions";
+    }
     double get_time(const State& state) const override
     {
         return state.time;
     }
     uint get_iteration(const State& state) const override
     {
-        return uint(state.iter);
+        return round(state.iter);
     }
     void initial_state(State& state) const override
     {
@@ -347,14 +375,9 @@ public:
             else
                 return prim_to_cons(vec(0.1, 0.0, 0.125));
         };
-        auto ni = config.num_zones;
-        auto dx = 1.0 / ni;
-        auto ic = range(ni);
-        auto xc = (ic + 0.5) * dx;
-
         state.time = 0.0;
         state.iter = 0.0;
-        state.cons = xc.map(initial_conserved).cache();
+        state.cons = cell_coordinates(config).map(initial_conserved).cache();
     }
     void update(State& state) const override
     {
@@ -364,17 +387,64 @@ public:
     {
         return state.time < config.tfinal;
     }
-    double checkpoint_interval() const override
-    { 
-        return config.cpi;
-    }
     uint updates_per_batch() const override
     {
         return config.fold;
     }
+    double checkpoint_interval() const override
+    { 
+        return config.cpi;
+    }
+    double product_interval() const override
+    {
+        return config.spi;
+    }
+    double timeseries_interval() const override
+    {
+        return config.tsi;
+    }
+    std::set<uint> get_product_cols() const override
+    {
+        return std::set(config.sp.begin(), config.sp.end());
+    }
+    const char* get_product_name(uint column) const override
+    {
+        switch (column) {
+        case 0: return "comoving_mass_density";
+        case 1: return "gamma_beta";
+        case 2: return "gas_pressure";
+        case 3: return "cell_coordinate";
+        }
+        return nullptr;
+    }
+    Product compute_product(const State& state, uint column) const override
+    {
+        switch (column) {
+        case 0: return state.cons.map([] HD (cons_t u) { return cons_to_prim(u)[0]; }).cache();
+        case 1: return state.cons.map([] HD (cons_t u) { return cons_to_prim(u)[1]; }).cache();
+        case 2: return state.cons.map([] HD (cons_t u) { return cons_to_prim(u)[2]; }).cache();
+        case 3: return cell_coordinates(config).cache();
+        }
+        return {};
+    }
+    std::set<uint> get_timeseries_cols() const override
+    {
+        return std::set(config.ts.begin(), config.ts.end());
+    }
+    const char* get_timeseries_name(uint column) const override
+    {
+        switch (column) {
+        case 0: return "time";
+        }
+        return nullptr;
+    }
+    double compute_timeseries_sample(const State& state, uint column) const override
+    {
+        return state.time;
+    }
     vec_t<char, 256> status_message(const State& state, double secs_per_update) const override
     {
-        return vapor::format("[%04d] t=%lf Mzps=%.2lf",
+        return format("[%04d] t=%lf Mzps=%.2lf",
             get_iteration(state),
             get_time(state),
             1e-6 * config.num_zones / secs_per_update);
