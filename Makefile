@@ -1,4 +1,4 @@
 CXXFLAGS = -std=c++17 -Ofast -Wall
 
-shock: src/shock.cpp
+blast: src/blast.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< -I vapor/include -lhdf5

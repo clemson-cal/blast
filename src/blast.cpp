@@ -278,7 +278,7 @@ void update_state(State& state, const Config& config, prim_array_t& primitive)
 /**
  * 
  */
-class ShockSimulation : public Simulation<Config, State, DiagnosticData>
+class Blast : public Simulation<Config, State, DiagnosticData>
 {
 public:
     double get_time(const State& state) const override
@@ -340,7 +340,7 @@ private:
 int main(int argc, const char **argv)
 {
     try {
-        return ShockSimulation().run(argc, argv);
+        return Blast().run(argc, argv);
     }
     catch (const std::exception& e) {
         printf("[error]: %s\n", e.what());
