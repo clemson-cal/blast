@@ -197,11 +197,12 @@ HD auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_t
 struct Config
 {
     int num_zones = 100;
+    int fold = 50;
     double tfinal = 0.0;
     double cpi = 0.0;
     std::vector<int> ts;
 };
-VISITABLE_STRUCT(Config, num_zones, tfinal, cpi, ts);
+VISITABLE_STRUCT(Config, num_zones, fold, tfinal, cpi, ts);
 
 
 
@@ -321,7 +322,7 @@ public:
     }
     uint updates_per_batch() const override
     {
-        return 50;
+        return config.fold;
     }
     vec_t<char, 256> status_message(const State& state, double secs_per_update) const override
     {
