@@ -239,7 +239,7 @@ void update_state(State& state, const Config& config, prim_array_t& primitive)
     auto interior_faces = index_space(ivec(1), uvec(ni - 1));
     auto interior_cells = index_space(ivec(1), uvec(ni - 2));
 
-    if (primitive.size() == 0)
+    if (primitive.space() != u.space())
     {
         primitive = zeros<prim_t>(u.space()).cache();
     }
