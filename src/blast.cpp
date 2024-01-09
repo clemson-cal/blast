@@ -22,12 +22,7 @@ SOFTWARE.
 ================================================================================
 */
 
-
-
-
-// #define VAPOR_USE_SHARED_PTR_ALLOCATOR
 #include "vapor/vapor.hpp"
-using namespace vapor;
 
 
 
@@ -35,18 +30,13 @@ using namespace vapor;
 /**
  * 
  */
+using namespace vapor;
 using cons_t = vec_t<double, 3>;
 using prim_t = vec_t<double, 3>;
 using cons_array_t = memory_backed_array_t<1, cons_t, ref_counted_ptr_t>;
 using prim_array_t = memory_backed_array_t<1, prim_t, ref_counted_ptr_t>;
 using Product = memory_backed_array_t<1, double, ref_counted_ptr_t>;
 
-
-
-
-/**
- * 
- */
 #define index_density 0
 #define index_pressure 2
 #define index_energy 2
@@ -55,6 +45,20 @@ using Product = memory_backed_array_t<1, double, ref_counted_ptr_t>;
 #define max2(a, b) ((a) > (b) ? (a) : (b))
 #define min3(a, b, c) min2(a, min2(b, c))
 #define max3(a, b, c) max2(a, max2(b, c))
+#define sign(x) copysign(1.0, x)
+#define minabs(a, b, c) min3(fabs(a), fabs(b), fabs(c))
+
+HD static inline double plm_minmod(
+    double yl,
+    double yc,
+    double yr,
+    double plm_theta)
+{
+    double a = (yc - yl) * plm_theta;
+    double b = (yr - yl) * 0.5;
+    double c = (yr - yc) * plm_theta;
+    return 0.25 * fabs(sign(a) + sign(b)) * (sign(a) + sign(c)) * minabs(a, b, c);
+}
 
 
 
@@ -239,18 +243,9 @@ State average(const State& a, const State& b, double x)
 
 
 
-/**
- * 
- */
-using DiagnosticData = prim_array_t;
-
-
-
-
 State next(const State& state, const Config& config, double dt)
 {
     static prim_array_t primitive;
-
     auto ni = config.num_zones;
     auto dx = 1.0 / ni;
     auto iv = range(ni + 1);
@@ -297,13 +292,65 @@ State next(const State& state, const Config& config, double dt)
 
 
 
-auto cell_coordinates(const Config& config)
+State next_plm(const State& state, const Config& config, double dt)
 {
+    static prim_array_t primitive;
     auto ni = config.num_zones;
     auto dx = 1.0 / ni;
+    auto iv = range(ni + 1);
     auto ic = range(ni);
-    auto xc = (ic + 0.5) * dx;
-    return xc;
+    auto u = state.cons;
+    auto gradient_cells = ic.space().contract(1);
+    auto interior_faces = iv.space().contract(2);
+    auto interior_cells = ic.space().contract(2);
+
+    if (primitive.space() != u.space())
+    {
+        primitive = zeros<prim_t>(u.space()).cache();
+    }
+
+    primitive = ic.map([p=primitive, u] HD (int i)
+    {
+        auto ui = u[i];
+        auto pi = p[i];
+        return cons_to_prim(ui, pi[2]);
+    }).cache();
+
+    auto grad = ic[gradient_cells].map([p=primitive] HD (int i)
+    {
+        auto pl = p[i - 1];
+        auto pi = p[i + 0];
+        auto pr = p[i + 1];
+        auto gi = prim_t{};
+
+        for (int n = 0; n < 3; ++n)
+        {
+            gi[n] = plm_minmod(pl[n], pi[n], pr[n], 1.5);
+        }
+        return gi;
+    });
+
+    auto fhat = iv[interior_faces].map([p=primitive, g=grad] HD (int i)
+    {
+        auto pl = p[i - 1] + g[i - 1] * 0.5;
+        auto pr = p[i + 0] - g[i + 0] * 0.5;
+        auto ul = prim_to_cons(pl);
+        auto ur = prim_to_cons(pr);
+        return riemann_hlle(pl, pr, ul, ur);
+    }).cache();
+
+    auto du = ic[interior_cells].map([fhat, dt, dx] HD (int i)
+    {
+        auto fm = fhat[i];
+        auto fp = fhat[i + 1];
+        return (fp - fm) * (-dt / dx);
+    });
+
+    return State{
+        state.time + dt,
+        state.iter + 1.0,
+        (u.at(interior_cells) + du).cache(),
+    };
 }
 
 
@@ -319,23 +366,35 @@ void update_state(State& state, const Config& config)
     switch (config.rk)
     {
         case 1: {
-            state = next(s0, config, dt);
+            state = next_plm(s0, config, dt);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, config, dt), 1./1);
-            auto s2 = average(s0, next(s1, config, dt), 1./2);
+            auto s1 = average(s0, next_plm(s0, config, dt), 1./1);
+            auto s2 = average(s0, next_plm(s1, config, dt), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, config, dt), 1./1);
-            auto s2 = average(s0, next(s1, config, dt), 1./4);
-            auto s3 = average(s0, next(s2, config, dt), 2./3);
+            auto s1 = average(s0, next_plm(s0, config, dt), 1./1);
+            auto s2 = average(s0, next_plm(s1, config, dt), 1./4);
+            auto s3 = average(s0, next_plm(s2, config, dt), 2./3);
             state = s3;
             break;
         }
     }
+}
+
+
+
+
+auto cell_coordinates(const Config& config)
+{
+    auto ni = config.num_zones;
+    auto dx = 1.0 / ni;
+    auto ic = range(ni);
+    auto xc = (ic + 0.5) * dx;
+    return xc;
 }
 
 
