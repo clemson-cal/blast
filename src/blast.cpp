@@ -211,8 +211,9 @@ struct Config
     std::vector<uint> sp;
     std::vector<uint> ts;
     std::string outdir = ".";
+    std::string method = "pcm";
 };
-VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts, outdir);
+VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts, outdir, method);
 
 
 
@@ -243,7 +244,7 @@ State average(const State& a, const State& b, double x)
 
 
 
-State next(const State& state, const Config& config, double dt)
+State next_pcm(const State& state, const Config& config, double dt)
 {
     static prim_array_t primitive;
     auto ni = config.num_zones;
@@ -363,22 +364,34 @@ void update_state(State& state, const Config& config)
     auto dt = dx * 0.3;
     auto s0 = state;
 
+    auto next = std::function<State(State&, const Config&, double)>();
+
+    if (config.method == "pcm") {
+        next = next_pcm;
+    }
+    if (config.method == "plm") {
+        next = next_plm;
+    }
+    if (! next) {
+        throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
+    }
+
     switch (config.rk)
     {
         case 1: {
-            state = next_plm(s0, config, dt);
+            state = next(s0, config, dt);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next_plm(s0, config, dt), 1./1);
-            auto s2 = average(s0, next_plm(s1, config, dt), 1./2);
+            auto s1 = average(s0, next(s0, config, dt), 1./1);
+            auto s2 = average(s0, next(s1, config, dt), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next_plm(s0, config, dt), 1./1);
-            auto s2 = average(s0, next_plm(s1, config, dt), 1./4);
-            auto s3 = average(s0, next_plm(s2, config, dt), 2./3);
+            auto s1 = average(s0, next(s0, config, dt), 1./1);
+            auto s2 = average(s0, next(s1, config, dt), 1./4);
+            auto s3 = average(s0, next(s2, config, dt), 2./3);
             state = s3;
             break;
         }

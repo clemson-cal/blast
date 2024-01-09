@@ -1,3 +1,4 @@
 [submodule "vapor"]
 	path = vapor
+	branch = main
 	url = https://github.com/clemson-cal/vapor
