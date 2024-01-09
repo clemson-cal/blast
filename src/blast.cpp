@@ -276,12 +276,12 @@ State next_pcm(const State& state, const Config& config, double dt)
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([fhat, dt, dx] HD (int i)
+    auto du = ic[interior_cells].map([fhat] HD (int i)
     {
         auto fm = fhat[i];
         auto fp = fhat[i + 1];
-        return (fp - fm) * (-dt / dx);
-    });
+        return fp - fm;
+    }) * (-dt / dx);
 
     return State{
         state.time + dt,
@@ -320,16 +320,16 @@ State next_plm(const State& state, const Config& config, double dt)
     auto grad = ic[gradient_cells].map([p=primitive] HD (int i)
     {
         auto pl = p[i - 1];
-        auto pi = p[i + 0];
+        auto pc = p[i + 0];
         auto pr = p[i + 1];
-        auto gi = prim_t{};
+        auto gc = prim_t{};
 
         for (int n = 0; n < 3; ++n)
         {
-            gi[n] = plm_minmod(pl[n], pi[n], pr[n], 1.5);
+            gc[n] = plm_minmod(pl[n], pc[n], pr[n], 1.5);
         }
-        return gi;
-    });
+        return gc;
+    }).cache();
 
     auto fhat = iv[interior_faces].map([p=primitive, g=grad] HD (int i)
     {
@@ -340,12 +340,12 @@ State next_plm(const State& state, const Config& config, double dt)
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([fhat, dt, dx] HD (int i)
+    auto du = ic[interior_cells].map([fhat] HD (int i)
     {
         auto fm = fhat[i];
         auto fp = fhat[i + 1];
-        return (fp - fm) * (-dt / dx);
-    });
+        return fp - fm;
+    }) * (-dt / dx);
 
     return State{
         state.time + dt,
