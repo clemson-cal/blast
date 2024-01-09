@@ -228,7 +228,7 @@ VISITABLE_STRUCT(State, time, iter, cons);
 
 State average(const State& a, const State& b, double x)
 {
-    return {
+    return x == 1.0 ? a : State{
         (a.time * (1.0 - x) + b.time * x),
         (a.iter * (1.0 - x) + b.iter * x),
         (a.cons * (1.0 - x) + b.cons * x).cache()
@@ -322,14 +322,14 @@ void update_state(State& state, const Config& config)
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, config, dt), 1.0);
-            auto s2 = average(s0, next(s1, config, dt), 0.5);
+            auto s1 = average(s0, next(s0, config, dt), 1./1);
+            auto s2 = average(s0, next(s1, config, dt), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, config, dt), 1.00);
-            auto s2 = average(s0, next(s1, config, dt), 0.25);
+            auto s1 = average(s0, next(s0, config, dt), 1./1);
+            auto s2 = average(s0, next(s1, config, dt), 1./4);
             auto s3 = average(s0, next(s2, config, dt), 2./3);
             state = s3;
             break;
