@@ -206,8 +206,9 @@ struct Config
     double tsi = 0.0;
     std::vector<uint> sp;
     std::vector<uint> ts;
+    std::string outdir = ".";
 };
-VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts);
+VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts, outdir);
 
 
 
@@ -358,6 +359,10 @@ public:
     {
         return "GPU-accelerated hydrodynamics code for relativistic explosions";
     }
+    const char* output_directory() const override
+    {
+        return config.outdir.data();
+    }
     double get_time(const State& state) const override
     {
         return state.time;
@@ -460,7 +465,8 @@ int main(int argc, const char **argv)
         return Blast().run(argc, argv);
     }
     catch (const std::exception& e) {
-        printf("[error]: %s\n", e.what());
+        vapor::print(e.what());
+        vapor::print("\n");
     }
     return 0;
 }
