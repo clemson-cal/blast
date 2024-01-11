@@ -252,22 +252,23 @@ State next_pcm(const State& state, const Config& config, double dt)
     auto iv = range(ni + 1);
     auto ic = range(ni);
     auto u = state.cons;
+    auto p = primitive;
     auto interior_faces = iv.space().contract(1);
     auto interior_cells = ic.space().contract(1);
 
-    if (primitive.space() != u.space())
+    if (p.space() != u.space())
     {
-        primitive = zeros<prim_t>(u.space()).cache();
+        p = zeros<prim_t>(u.space()).cache();
     }
 
-    primitive = ic.map([p=primitive, u] HD (int i)
+    p = ic.map([p, u] HD (int i)
     {
         auto ui = u[i];
         auto pi = p[i];
         return cons_to_prim(ui, pi[2]);
     }).cache();
 
-    auto fhat = iv[interior_faces].map([p=primitive, u] HD (int i)
+    auto fhat = iv[interior_faces].map([p, u] HD (int i)
     {
         auto ul = u[i - 1];
         auto ur = u[i];
@@ -288,6 +289,7 @@ State next_pcm(const State& state, const Config& config, double dt)
         state.iter + 1.0,
         (u.at(interior_cells) + du).cache(),
     };
+    return state;
 }
 
 
@@ -301,23 +303,24 @@ State next_plm(const State& state, const Config& config, double dt)
     auto iv = range(ni + 1);
     auto ic = range(ni);
     auto u = state.cons;
+    auto p = primitive;
     auto gradient_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(2);
     auto interior_cells = ic.space().contract(2);
 
-    if (primitive.space() != u.space())
+    if (p.space() != u.space())
     {
-        primitive = zeros<prim_t>(u.space()).cache();
+        p = zeros<prim_t>(u.space()).cache();
     }
 
-    primitive = ic.map([p=primitive, u] HD (int i)
+    p = ic.map([p, u] HD (int i)
     {
         auto ui = u[i];
         auto pi = p[i];
         return cons_to_prim(ui, pi[2]);
     }).cache();
 
-    auto grad = ic[gradient_cells].map([p=primitive] HD (int i)
+    auto grad = ic[gradient_cells].map([p] HD (int i)
     {
         auto pl = p[i - 1];
         auto pc = p[i + 0];
@@ -331,10 +334,10 @@ State next_plm(const State& state, const Config& config, double dt)
         return gc;
     }).cache();
 
-    auto fhat = iv[interior_faces].map([p=primitive, g=grad] HD (int i)
+    auto fhat = iv[interior_faces].map([p, grad] HD (int i)
     {
-        auto pl = p[i - 1] + g[i - 1] * 0.5;
-        auto pr = p[i + 0] - g[i + 0] * 0.5;
+        auto pl = p[i - 1] + grad[i - 1] * 0.5;
+        auto pr = p[i + 0] - grad[i + 0] * 0.5;
         auto ul = prim_to_cons(pl);
         auto ur = prim_to_cons(pr);
         return riemann_hlle(pl, pr, ul, ur);
