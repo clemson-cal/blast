@@ -201,14 +201,14 @@ HD auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_t
  */
 struct Config
 {
-    int num_zones = 100;
+    int num_zones = 1000;
     int fold = 50;
     int rk = 1;
     double tfinal = 0.0;
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
-    std::vector<uint> sp;
+    std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
     std::string method = "pcm";
