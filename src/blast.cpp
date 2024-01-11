@@ -22,6 +22,8 @@ SOFTWARE.
 ================================================================================
 */
 
+#include <cmath>
+#include <functional>
 #include "vapor/vapor.hpp"
 
 
