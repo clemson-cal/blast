@@ -68,34 +68,34 @@ HD static inline double plm_minmod(
 /**
  * 
  */
-HD auto gamma_beta_squared(prim_t p) -> double
+HD static auto gamma_beta_squared(prim_t p) -> double
 {
     return p[1] * p[1];
 }
 
-HD auto momentum_squared(cons_t u) -> double
+HD static auto momentum_squared(cons_t u) -> double
 {
     return u[1] * u[1];
 }
 
-HD auto lorentz_factor(prim_t p) -> double
+HD static auto lorentz_factor(prim_t p) -> double
 {
     return sqrt(1.0 + gamma_beta_squared(p));
 }
 
-HD auto beta_component(prim_t p, int axis) -> double
+HD static auto beta_component(prim_t p, int axis) -> double
 {
     return p[axis + 1] / lorentz_factor(p);
 }
 
-HD auto enthalpy_density(prim_t p) -> double
+HD static auto enthalpy_density(prim_t p) -> double
 {
     auto rho = p[index_density];
     auto pre = p[index_pressure];
     return rho + pre * (1.0 + 1.0 / (gamma - 1.0));
 }
 
-HD auto prim_to_cons(prim_t p) -> cons_t
+HD static auto prim_to_cons(prim_t p) -> cons_t
 {
     auto rho = p[index_density];
     auto pre = p[index_pressure];
@@ -109,7 +109,7 @@ HD auto prim_to_cons(prim_t p) -> cons_t
     return u;
 }
 
-HD auto cons_to_prim(cons_t cons, double p=0.0) -> prim_t
+HD static auto cons_to_prim(cons_t cons, double p=0.0) -> prim_t
 {
     auto newton_iter_max = 50;
     auto error_tolerance = 1e-12 * (cons[index_density] + cons[index_energy]);
@@ -148,7 +148,7 @@ HD auto cons_to_prim(cons_t cons, double p=0.0) -> prim_t
     return {m / w0, w0 * cons[1] / (tau + m + p), p};
 }
 
-HD auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
+HD static auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
 {
     double pre = p[index_pressure];
     double vn = beta_component(p, axis);
@@ -159,14 +159,14 @@ HD auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
     return f;
 }
 
-HD auto sound_speed_squared(prim_t p) -> double
+HD static auto sound_speed_squared(prim_t p) -> double
 {
     const double pre = p[index_pressure];
     const double rho_h = enthalpy_density(p);
     return gamma * pre / rho_h;
 }
 
-HD auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
+HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
 {
     double a2 = sound_speed_squared(p);
     double uu = gamma_beta_squared(p);
@@ -180,7 +180,7 @@ HD auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
     );
 }
 
-HD auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_t
+HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_t
 {
     auto fl = prim_and_cons_to_flux(pl, ul, 0);
     auto fr = prim_and_cons_to_flux(pr, ur, 0);
@@ -234,7 +234,7 @@ VISITABLE_STRUCT(State, time, iter, cons);
 
 
 
-State average(const State& a, const State& b, double x)
+static State average(const State& a, const State& b, double x)
 {
     return x == 1.0 ? a : State{
         (a.time * (1.0 - x) + b.time * x),
@@ -246,7 +246,7 @@ State average(const State& a, const State& b, double x)
 
 
 
-State next_pcm(const State& state, const Config& config, double dt)
+static State next_pcm(const State& state, const Config& config, double dt)
 {
     static prim_array_t primitive;
     auto ni = config.num_zones;
@@ -297,7 +297,7 @@ State next_pcm(const State& state, const Config& config, double dt)
 
 
 
-State next_plm(const State& state, const Config& config, double dt)
+static State next_plm(const State& state, const Config& config, double dt)
 {
     static prim_array_t primitive;
     auto ni = config.num_zones;
@@ -362,7 +362,7 @@ State next_plm(const State& state, const Config& config, double dt)
 
 
 
-void update_state(State& state, const Config& config)
+static void update_state(State& state, const Config& config)
 {
     auto ni = config.num_zones;
     auto dx = 1.0 / ni;
@@ -406,7 +406,7 @@ void update_state(State& state, const Config& config)
 
 
 
-auto cell_coordinates(const Config& config)
+static auto cell_coordinates(const Config& config)
 {
     auto ni = config.num_zones;
     auto dx = 1.0 / ni;

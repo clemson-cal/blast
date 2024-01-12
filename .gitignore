@@ -1,4 +1,6 @@
-blast
+bin
+build
 *.cfg
 *.h5
+*.dSYM
 .venv
