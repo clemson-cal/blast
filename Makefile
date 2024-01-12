@@ -41,6 +41,7 @@ dbg: $(EXE_DBG)
 cpu: $(EXE_CPU)
 omp: $(EXE_OMP)
 gpu: $(EXE_GPU)
+all: $(EXE)
 
 $(EXE_DBG): $(OBJ_DBG) bin
 	$(CXX_DBG) -o $@ $< $(LIBS_ANY) $(LIBS_DBG)
@@ -51,21 +52,21 @@ $(EXE_OMP): $(OBJ_OMP) bin
 $(EXE_GPU): $(OBJ_GPU) bin
 	$(CXX_GPU) -o $@ $< $(LIBS_ANY) $(LIBS_GPU)
 
-$(OBJ_DBG): src/$(PROGRAM).cpp build
+$(OBJ_DBG): src/$(PROGRAM).cpp
 	$(CXX_DBG) -o $@ $< $(FLAG_ANY) $(FLAG_DBG) -c
-$(OBJ_CPU): src/$(PROGRAM).cpp build
+$(OBJ_CPU): src/$(PROGRAM).cpp
 	$(CXX_CPU) -o $@ $< $(FLAG_ANY) $(FLAG_CPU) -c
-$(OBJ_OMP): src/$(PROGRAM).cpp build
+$(OBJ_OMP): src/$(PROGRAM).cpp
 	$(CXX_OMP) -o $@ $< $(FLAG_ANY) $(FLAG_OMP) -c
-$(OBJ_GPU): src/$(PROGRAM).cpp build
+$(OBJ_GPU): src/$(PROGRAM).cpp
 	$(CXX_GPU) -o $@ $< $(FLAG_ANY) $(FLAG_GPU) -c
 
-all: $(EXE)
+$(OBJ): | build
 
 build:
-	mkdir -p $@
+	@mkdir -p $@
 bin:
-	mkdir -p $@
+	@mkdir -p $@
 clean:
 	$(RM) $(DEP) $(OBJ) $(EXE)
 
