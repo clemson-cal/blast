@@ -1,0 +1,12 @@
+{
+	"src": "src",
+	"bin": "bin",
+	"build": "build",
+	"vapor": "vapor",
+	"programs": {
+		"blast": {
+			"deps": ["hdf5"]
+		}
+	},
+	"default_modes": ["dbg", "cpu", "omp"]
+}

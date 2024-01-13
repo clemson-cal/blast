@@ -1,6 +1,9 @@
+*.cfg
+*.dSYM
+*.h5
+.DS_Store
+.venv
 bin
 build
-*.cfg
-*.h5
-*.dSYM
-.venv
+Makefile
+system.json
