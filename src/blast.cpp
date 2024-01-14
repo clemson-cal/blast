@@ -246,29 +246,33 @@ static State average(const State& a, const State& b, double x)
 
 
 
-static State next_pcm(const State& state, const Config& config, double dt)
+static void update_prim(const State& state, prim_array_t& p)
 {
-    static prim_array_t primitive;
-    auto ni = config.num_zones;
-    auto dx = 1.0 / ni;
-    auto iv = range(ni + 1);
-    auto ic = range(ni);
     auto u = state.cons;
-    auto p = primitive;
-    auto interior_faces = iv.space().contract(1);
-    auto interior_cells = ic.space().contract(1);
 
     if (p.space() != u.space())
     {
         p = zeros<prim_t>(u.space()).cache();
     }
-
-    p = ic.map([p, u] HD (int i)
+    p = range(u.shape()[0]).map([p, u] HD (int i)
     {
         auto ui = u[i];
         auto pi = p[i];
         return cons_to_prim(ui, pi[2]);
     }).cache();
+}
+
+static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt)
+{
+    auto u = state.cons;
+    auto ni = config.num_zones;
+    auto dx = 1.0 / ni;
+    auto iv = range(ni + 1);
+    auto ic = range(ni);
+    auto interior_faces = iv.space().contract(1);
+    auto interior_cells = ic.space().contract(1);
+
+    update_prim(state, p);
 
     auto fhat = iv[interior_faces].map([p, u] HD (int i)
     {
@@ -297,30 +301,18 @@ static State next_pcm(const State& state, const Config& config, double dt)
 
 
 
-static State next_plm(const State& state, const Config& config, double dt)
+static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt)
 {
-    static prim_array_t primitive;
+    auto u = state.cons;
     auto ni = config.num_zones;
     auto dx = 1.0 / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
-    auto u = state.cons;
-    auto p = primitive;
     auto gradient_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(2);
     auto interior_cells = ic.space().contract(2);
 
-    if (p.space() != u.space())
-    {
-        p = zeros<prim_t>(u.space()).cache();
-    }
-
-    p = ic.map([p, u] HD (int i)
-    {
-        auto ui = u[i];
-        auto pi = p[i];
-        return cons_to_prim(ui, pi[2]);
-    }).cache();
+    update_prim(state, p);
 
     auto grad = ic[gradient_cells].map([p] HD (int i)
     {
@@ -364,12 +356,13 @@ static State next_plm(const State& state, const Config& config, double dt)
 
 static void update_state(State& state, const Config& config)
 {
+    static prim_array_t p;
     auto ni = config.num_zones;
     auto dx = 1.0 / ni;
     auto dt = dx * 0.3;
     auto s0 = state;
 
-    auto next = std::function<State(State&, const Config&, double)>();
+    auto next = std::function<State(State&, const Config&, prim_array_t&, double)>();
 
     if (config.method == "pcm") {
         next = next_pcm;
@@ -381,22 +374,26 @@ static void update_state(State& state, const Config& config)
         throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
     }
 
+    if (true) {
+        update_prim(state, p);
+    }
+
     switch (config.rk)
     {
         case 1: {
-            state = next(s0, config, dt);
+            state = next(s0, config, p, dt);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, config, dt), 1./1);
-            auto s2 = average(s0, next(s1, config, dt), 1./2);
+            auto s1 = average(s0, next(s0, config, p, dt), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, config, dt), 1./1);
-            auto s2 = average(s0, next(s1, config, dt), 1./4);
-            auto s3 = average(s0, next(s2, config, dt), 2./3);
+            auto s1 = average(s0, next(s0, config, p, dt), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt), 1./4);
+            auto s3 = average(s0, next(s2, config, p, dt), 2./3);
             state = s3;
             break;
         }
