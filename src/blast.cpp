@@ -136,7 +136,7 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> prim_t
         if (n == newton_iter_max)
         {
             printf("c2p failed; D=%f tau=%f\n", cons[index_density], cons[index_energy]);
-            exit(1);
+            // exit(1);
         }
         if (fabs(f) < error_tolerance) {
             w0 = w;
@@ -262,7 +262,7 @@ static void update_prim(const State& state, prim_array_t& p)
     }).cache();
 }
 
-static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt)
+static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
     auto ni = config.num_zones;
@@ -272,7 +272,9 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto interior_faces = iv.space().contract(1);
     auto interior_cells = ic.space().contract(1);
 
-    update_prim(state, p);
+    if (prim_dirty) {
+        update_prim(state, p);
+    }
 
     auto fhat = iv[interior_faces].map([p, u] HD (int i)
     {
@@ -301,7 +303,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 
 
 
-static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt)
+static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
     auto ni = config.num_zones;
@@ -312,7 +314,9 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
     auto interior_faces = iv.space().contract(2);
     auto interior_cells = ic.space().contract(2);
 
-    update_prim(state, p);
+    if (prim_dirty) {
+        update_prim(state, p);
+    }
 
     auto grad = ic[gradient_cells].map([p] HD (int i)
     {
@@ -362,7 +366,7 @@ static void update_state(State& state, const Config& config)
     auto dt = dx * 0.3;
     auto s0 = state;
 
-    auto next = std::function<State(State&, const Config&, prim_array_t&, double)>();
+    auto next = std::function<State(State&, const Config&, prim_array_t&, double, int)>();
 
     if (config.method == "pcm") {
         next = next_pcm;
@@ -381,19 +385,19 @@ static void update_state(State& state, const Config& config)
     switch (config.rk)
     {
         case 1: {
-            state = next(s0, config, p, dt);
+            state = next(s0, config, p, dt, 0);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, config, p, dt), 1./1);
-            auto s2 = average(s0, next(s1, config, p, dt), 1./2);
+            auto s1 = average(s0, next(s0, config, p, dt, 0), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, config, p, dt), 1./1);
-            auto s2 = average(s0, next(s1, config, p, dt), 1./4);
-            auto s3 = average(s0, next(s2, config, p, dt), 2./3);
+            auto s1 = average(s0, next(s0, config, p, dt, 0), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./4);
+            auto s3 = average(s0, next(s2, config, p, dt, 1), 2./3);
             state = s3;
             break;
         }
