@@ -361,11 +361,6 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
 static void update_state(State& state, const Config& config)
 {
     static prim_array_t p;
-    auto ni = config.num_zones;
-    auto dx = 1.0 / ni;
-    auto dt = dx * 0.3;
-    auto s0 = state;
-
     auto next = std::function<State(State&, const Config&, prim_array_t&, double, int)>();
 
     if (config.method == "pcm") {
@@ -378,9 +373,19 @@ static void update_state(State& state, const Config& config)
         throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
     }
 
-    if (true) {
-        update_prim(state, p);
-    }
+    auto wavespeed = [] HD (prim_t p) -> double
+    {
+        auto a = outer_wavespeeds(p, 0);
+        return max2(fabs(a[0]), fabs(a[1]));
+    };
+
+    update_prim(state, p);
+
+    auto cfl_number = 0.4;
+    auto ni = config.num_zones;
+    auto dx = 1.0 / ni;
+    auto dt = dx / max(p.map(wavespeed)) * cfl_number;
+    auto s0 = state;
 
     switch (config.rk)
     {
