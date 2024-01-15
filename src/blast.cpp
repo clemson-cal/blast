@@ -109,7 +109,7 @@ HD static auto prim_to_cons(prim_t p) -> cons_t
     return u;
 }
 
-HD static auto cons_to_prim(cons_t cons, double p=0.0) -> prim_t
+HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 {
     auto newton_iter_max = 50;
     auto error_tolerance = 1e-12 * (cons[index_density] + cons[index_energy]);
@@ -135,17 +135,17 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> prim_t
 
         if (n == newton_iter_max)
         {
-            printf("c2p failed; D=%f tau=%f\n", cons[index_density], cons[index_energy]);
-            // exit(1);
+            return none<prim_t>();
         }
-        if (fabs(f) < error_tolerance) {
+        if (fabs(f) < error_tolerance)
+        {
             w0 = w;
             break;
         }        
         p -= f / g;
         n += 1;
     }
-    return {m / w0, w0 * cons[1] / (tau + m + p), p};
+    return some(prim_t{m / w0, w0 * cons[1] / (tau + m + p), p});
 }
 
 HD static auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
@@ -259,7 +259,7 @@ static void update_prim(const State& state, prim_array_t& p)
         auto ui = u[i];
         auto pi = p[i];
         return cons_to_prim(ui, pi[2]);
-    }).cache();
+    }).cache_unwrap();
 }
 
 static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
@@ -507,10 +507,15 @@ public:
     }
     Product compute_product(const State& state, uint column) const override
     {
+        auto cons_field = [] (uint n) {
+            return [n] HD (cons_t u) {
+                return cons_to_prim(u).map(take_nth_t<prim_t>{n});
+            };
+        };
         switch (column) {
-        case 0: return state.cons.map([] HD (cons_t u) { return cons_to_prim(u)[0]; }).cache();
-        case 1: return state.cons.map([] HD (cons_t u) { return cons_to_prim(u)[1]; }).cache();
-        case 2: return state.cons.map([] HD (cons_t u) { return cons_to_prim(u)[2]; }).cache();
+        case 0: return state.cons.map(cons_field(0)).cache_unwrap();
+        case 1: return state.cons.map(cons_field(1)).cache_unwrap();
+        case 2: return state.cons.map(cons_field(2)).cache_unwrap();
         case 3: return cell_coordinates(config).cache();
         }
         return {};
