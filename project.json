@@ -7,6 +7,5 @@
 		"blast": {
 			"deps": ["hdf5"]
 		}
-	},
-	"default_modes": ["dbg", "cpu", "omp"]
+	}
 }
