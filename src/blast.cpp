@@ -195,6 +195,17 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     return (fl * ap - fr * am - (ul - ur) * ap * am) / (ap - am);
 };
 
+HD static auto geometric_source_terms(prim_t p, double r0, double r1)
+{
+    // Eqn A8 in Zhang & MacFadyen (2006), averaged over the spherical shell
+    // between r0 and r1, and specializing to radial velocity only.
+    auto pg = p[2];
+    auto dr2 = pow(r1, 2) - pow(r0, 2);
+    auto dr3 = pow(r1, 3) - pow(r0, 3);
+    auto srdot = 3.0 * pg * dr2 / dr3;
+    return cons_t{0.0, srdot, 0.0};
+}
+
 
 
 
@@ -214,8 +225,9 @@ struct Config
     std::vector<uint> ts;
     std::string outdir = ".";
     std::string method = "pcm";
+    std::string setup = "sod";
 };
-VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts, outdir, method);
+VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts, outdir, method, setup);
 
 
 
@@ -307,12 +319,27 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
 {
     auto u = state.cons;
     auto ni = config.num_zones;
-    auto dx = 1.0 / ni;
+    // auto dx = 1.0 / ni;
+    auto dx = 9.0 / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
     auto gradient_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(2);
     auto interior_cells = ic.space().contract(2);
+
+    auto face_coordinates = [dx] (int i)
+    {
+        // return i * dx;
+        return i * dx + 1.0;
+    };
+    auto face_areas = [] (double r)
+    {
+        return r * r;
+    };
+    auto cell_volumes = [] (double r0, double r1)
+    {
+        return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
+    };
 
     if (prim_dirty) {
         update_prim(state, p);
@@ -341,12 +368,19 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([fhat] HD (int i)
+    auto du = ic[interior_cells].map([fhat, p, face_coordinates, face_areas, cell_volumes] HD (int i)
     {
+        auto rm = face_coordinates(i + 0);
+        auto rp = face_coordinates(i + 1);
+        auto am = face_areas(rm);
+        auto ap = face_areas(rp);
+        auto dv = cell_volumes(rm, rp);
+
         auto fm = fhat[i];
         auto fp = fhat[i + 1];
-        return fp - fm;
-    }) * (-dt / dx);
+        auto udot = geometric_source_terms(p[i], rm, rp);
+        return (fm * am - fp * ap) / dv + udot;
+    }) * dt;
 
     return State{
         state.time + dt,
@@ -383,7 +417,8 @@ static void update_state(State& state, const Config& config)
 
     auto cfl_number = 0.4;
     auto ni = config.num_zones;
-    auto dx = 1.0 / ni;
+    // auto dx = 1.0 / ni;
+    auto dx = 9.0 / ni;
     auto dt = dx / max(p.map(wavespeed)) * cfl_number;
     auto s0 = state;
 
@@ -415,9 +450,11 @@ static void update_state(State& state, const Config& config)
 static auto cell_coordinates(const Config& config)
 {
     auto ni = config.num_zones;
-    auto dx = 1.0 / ni;
+    // auto dx = 1.0 / ni;
+    auto dx = 9.0 / ni;
     auto ic = range(ni);
-    auto xc = (ic + 0.5) * dx;
+    // auto xc = (ic + 0.5) * dx;
+    auto xc = (ic + 0.5) * dx + 1.0;
     return xc;
 }
 
@@ -456,12 +493,24 @@ public:
     }
     void initial_state(State& state) const override
     {
-        auto initial_conserved = [] HD (double x)
+        auto initial_conserved = [this] HD (double x)
         {
-            if (x < 0.5)
-                return prim_to_cons(vec(1.0, 0.0, 1.0));
-            else
-                return prim_to_cons(vec(0.1, 0.0, 0.125));
+            if (config.setup == "sod") {
+                if (x < 5.5) {
+                    return prim_to_cons(vec(1.0, 0.0, 1.0));
+                } else {
+                    return prim_to_cons(vec(0.1, 0.0, 0.125));
+                }
+            }
+            if (config.setup == "cold_wind") {
+                return prim_to_cons(vec(1.0 / x / x, 0.1, 1.0E-5 / x / x));
+            }
+            if (config.setup == "uniform") {
+                return prim_to_cons(vec(1.0, 0.0, 1.0E-4));
+            }
+            else {
+                return prim_to_cons(vec(1.0, 0.0, 1.0E-4));
+            }
         };
         state.time = 0.0;
         state.iter = 0.0;
