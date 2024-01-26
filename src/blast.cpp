@@ -241,13 +241,15 @@ struct Config
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
+    double ri = 1.0;
+    double ro = 10.0;
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
     std::string method = "pcm";
     std::string setup = "sod";
 };
-VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, sp, ts, outdir, method, setup);
+VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, ri, ro, sp, ts, outdir, method, setup);
 
 
 
@@ -339,18 +341,18 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
 {
     auto u = state.cons;
     auto ni = config.num_zones;
-    // auto dx = 1.0 / ni;
-    auto dx = 9.0 / ni;
+    auto ri = config.ri;
+    auto ro = config.ro;
+    auto dx = (ro - ri) / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
     auto gradient_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(2);
     auto interior_cells = ic.space().contract(2);
 
-    auto face_coordinates = [dx] (int i)
+    auto face_coordinates = [dx, ri] (int i)
     {
-        // return i * dx;
-        return i * dx + 1.0;
+        return i * dx + ri;
     };
     auto face_areas = [] (double r)
     {
@@ -437,8 +439,9 @@ static void update_state(State& state, const Config& config)
 
     auto cfl_number = 0.4;
     auto ni = config.num_zones;
-    // auto dx = 1.0 / ni;
-    auto dx = 9.0 / ni;
+    auto ri = config.ri;
+    auto ro = config.ro;
+    auto dx = (ro - ri) / ni;
     auto dt = dx / max(p.map(wavespeed)) * cfl_number;
     auto s0 = state;
 
@@ -470,11 +473,11 @@ static void update_state(State& state, const Config& config)
 static auto cell_coordinates(const Config& config)
 {
     auto ni = config.num_zones;
-    // auto dx = 1.0 / ni;
-    auto dx = 9.0 / ni;
+    auto ri = config.ri;
+    auto ro = config.ro;
+    auto dx = (ro - ri) / ni;
     auto ic = range(ni);
-    // auto xc = (ic + 0.5) * dx;
-    auto xc = (ic + 0.5) * dx + 1.0;
+    auto xc = (ic + 0.5) * dx + ri;
     return xc;
 }
 
@@ -514,15 +517,17 @@ public:
     void initial_state(State& state) const override
     {
         auto setup = setup_from_string(config.setup);
+        auto ri = config.ri;
+        auto ro = config.ro;
 
-        auto initial_conserved = [setup] HD (double x)
+        auto initial_conserved = [setup, ri, ro] HD (double x)
         {
             switch (setup)
             {
             case Setup::uniform:
                 return prim_to_cons(vec(1.0, 0.0, 1e-4));
             case Setup::sod:
-                if (x < 5.5) {
+                if (x < (0.5 * (ro - ri))) {
                     return prim_to_cons(vec(1.0, 0.0, 1.0));
                 } else {
                     return prim_to_cons(vec(0.1, 0.0, 0.125));
@@ -535,7 +540,6 @@ public:
                 }
             case Setup::bmk:
                 {
-                    // TODO
                     throw std::runtime_error("bmk not implemented yet");
                 }
             }
