@@ -209,6 +209,26 @@ HD static auto geometric_source_terms(prim_t p, double r0, double r1)
 
 
 
+enum class Setup
+{
+    uniform,
+    sod,
+    wind,
+    bmk,
+};
+
+static Setup setup_from_string(const std::string& name)
+{
+    if (name == "uniform") return Setup::uniform;
+    if (name == "sod") return Setup::sod;
+    if (name == "wind") return Setup::wind;
+    if (name == "bmk") return Setup::bmk;
+    throw std::runtime_error("unknown setup " + name);
+}
+
+
+
+
 /**
  * 
  */
@@ -493,23 +513,31 @@ public:
     }
     void initial_state(State& state) const override
     {
-        auto initial_conserved = [this] HD (double x)
+        auto setup = setup_from_string(config.setup);
+
+        auto initial_conserved = [setup] HD (double x)
         {
-            if (config.setup == "sod") {
+            switch (setup)
+            {
+            case Setup::uniform:
+                return prim_to_cons(vec(1.0, 0.0, 1e-4));
+            case Setup::sod:
                 if (x < 5.5) {
                     return prim_to_cons(vec(1.0, 0.0, 1.0));
                 } else {
                     return prim_to_cons(vec(0.1, 0.0, 0.125));
                 }
-            }
-            if (config.setup == "cold_wind") {
-                return prim_to_cons(vec(1.0 / x / x, 0.1, 1.0E-5 / x / x));
-            }
-            if (config.setup == "uniform") {
-                return prim_to_cons(vec(1.0, 0.0, 1.0E-4));
-            }
-            else {
-                return prim_to_cons(vec(1.0, 0.0, 1.0E-4));
+            case Setup::wind:
+                {
+                    auto rho = 1.0 / x / x;
+                    auto pre = 1e-6 * pow(rho, gamma); // uniform entropy
+                    return prim_to_cons(vec(rho, 0.1, pre));
+                }
+            case Setup::bmk:
+                {
+                    // TODO
+                    throw std::runtime_error("bmk not implemented yet");
+                }
             }
         };
         state.time = 0.0;
