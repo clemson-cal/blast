@@ -197,12 +197,11 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
 
 HD static auto geometric_source_terms(prim_t p, double r0, double r1)
 {
-    // Eqn A8 in Zhang & MacFadyen (2006), averaged over the spherical shell
+    // Eqn A8 in Zhang & MacFadyen (2006), integrated over the spherical shell
     // between r0 and r1, and specializing to radial velocity only.
     auto pg = p[2];
     auto dr2 = pow(r1, 2) - pow(r0, 2);
-    auto dr3 = pow(r1, 3) - pow(r0, 3);
-    auto srdot = 3.0 * pg * dr2 / dr3;
+    auto srdot = pg * dr2;
     return cons_t{0.0, srdot, 0.0};
 }
 
@@ -249,7 +248,22 @@ struct Config
     std::string method = "pcm";
     std::string setup = "sod";
 };
-VISITABLE_STRUCT(Config, num_zones, fold, rk, tfinal, cpi, spi, tsi, ri, ro, sp, ts, outdir, method, setup);
+VISITABLE_STRUCT(Config,
+    num_zones,
+    fold,
+    rk,
+    tfinal,
+    cpi,
+    spi,
+    tsi,
+    ri,
+    ro,
+    sp,
+    ts,
+    outdir,
+    method,
+    setup
+);
 
 
 
@@ -397,11 +411,10 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         auto am = face_areas(rm);
         auto ap = face_areas(rp);
         auto dv = cell_volumes(rm, rp);
-
         auto fm = fhat[i];
         auto fp = fhat[i + 1];
         auto udot = geometric_source_terms(p[i], rm, rp);
-        return (fm * am - fp * ap) / dv + udot;
+        return (fm * am - fp * ap + udot) / dv;
     }) * dt;
 
     return State{
