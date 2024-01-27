@@ -283,9 +283,9 @@ struct Config
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
-    std::string method = "pcm";
+    std::string method = "plm";
     std::string setup = "sod";
-    std::string coords = "planar"; // or spherical
+    std::string coords = "spherical"; // or planar
 };
 VISITABLE_STRUCT(Config,
     num_zones,
@@ -588,8 +588,26 @@ public:
                     auto pre = 1e-6 * pow(rho, gamma); // uniform entropy
                     return prim_to_cons(vec(rho, 0.1, pre));
                 }
-            case Setup::bmk: {
-                    throw std::runtime_error("bmk not implemented yet");
+            case Setup::bmk:
+                {
+                    auto shock_radius = 1.0;
+                    auto eta = x / shock_radius;
+                    auto Gamma = 10.0;
+                    auto xi = Gamma * Gamma * (eta - 1.0);
+                    auto f = 0.5 - 8.0 * xi;
+                    auto g = 2.0 * sqrt(2.0) * pow((1.0 - 8.0 * xi), (-5.0 / 4.0));
+                    auto h = (2.0 / 3.0) * pow((1.0 - 8.0 * xi), (-17.0 / 12.0));
+                    auto rho = Gamma * g;
+                    auto v = sqrt(1.0 - 1.0 / Gamma / Gamma);
+                    auto vel = v * (1.0 - (1.0 / Gamma / Gamma) * f);
+                    auto gb = vel / sqrt(1.0 - vel * vel);
+                    auto pre = Gamma * Gamma * h;
+
+                    if (eta <= 1.0) {
+                        return prim_to_cons(vec(rho, gb, pre));
+                    } else {
+                        return prim_to_cons(vec(0.01, 0.00, 1.0E-6));
+                    }
                 }
             }
         };
