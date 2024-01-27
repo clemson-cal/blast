@@ -209,7 +209,7 @@ HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1)
 
 
 template<class FacePosition, class FaceArea, class CellVolume, class GeometricSourceTerms>
-struct coordinate_system_t
+struct grid_geometry_t
 {
     array_t<1, FacePosition> face_position;
     array_t<1, FaceArea> face_area;
@@ -218,13 +218,13 @@ struct coordinate_system_t
 };
 
 template<class FacePosition, class FaceArea, class CellVolume, class GeometricSourceTerms>
-auto coordinate_system(
+auto grid_geometry(
     array_t<1, FacePosition> face_position,
     array_t<1, FaceArea> face_area,
     array_t<1, CellVolume> cell_volume,
     GeometricSourceTerms geometric_source_terms)
 {
-    return coordinate_system_t<FacePosition, FaceArea, CellVolume, GeometricSourceTerms>{
+    return grid_geometry_t<FacePosition, FaceArea, CellVolume, GeometricSourceTerms>{
         face_position,
         face_area,
         cell_volume,
@@ -242,7 +242,6 @@ enum class Setup
     wind,
     bmk,
 };
-
 static Setup setup_from_string(const std::string& name)
 {
     if (name == "uniform") return Setup::uniform;
@@ -250,6 +249,18 @@ static Setup setup_from_string(const std::string& name)
     if (name == "wind") return Setup::wind;
     if (name == "bmk") return Setup::bmk;
     throw std::runtime_error("unknown setup " + name);
+}
+
+enum class CoordinateSystem
+{
+    planar,
+    spherical,
+};
+static CoordinateSystem coords_from_string(const std::string& name)
+{
+    if (name == "planar") return CoordinateSystem::planar;
+    if (name == "spherical") return CoordinateSystem::spherical;
+    throw std::runtime_error("unknown coords " + name);
 }
 
 
@@ -274,6 +285,7 @@ struct Config
     std::string outdir = ".";
     std::string method = "pcm";
     std::string setup = "sod";
+    std::string coords = "planar"; // or spherical
 };
 VISITABLE_STRUCT(Config,
     num_zones,
@@ -289,7 +301,8 @@ VISITABLE_STRUCT(Config,
     ts,
     outdir,
     method,
-    setup
+    setup,
+    coords
 );
 
 
@@ -389,14 +402,14 @@ static State next_pcm(const State& state, const CoordinateSystem& coords, const 
 
 
 
-template<class CoordinateSystem>
-static State next_plm(const State& state, const CoordinateSystem& coords, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+template<class Geometry>
+static State next_plm(const State& state, const Geometry& geom, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
-    auto rf = coords.face_position;
-    auto da = coords.face_area;
-    auto dv = coords.cell_volume;
-    auto st = coords.geometric_source_terms;
+    auto rf = geom.face_position;
+    auto da = geom.face_area;
+    auto dv = geom.cell_volume;
+    auto st = geom.geometric_source_terms;
     auto ic = range(dv.space());
     auto iv = range(rf.space());
     auto gradient_cells = ic.space().contract(1);
@@ -451,17 +464,17 @@ static State next_plm(const State& state, const CoordinateSystem& coords, const 
 
 
 
-template<class CoordinateSystem>
-static void update_state(State& state, const CoordinateSystem& coords, const Config& config)
+template<class Geometry>
+static void update_state(State& state, const Geometry& geom, const Config& config)
 {
     static prim_array_t p;
-    auto next = std::function<State(State&, const CoordinateSystem&, const Config&, prim_array_t&, double, int)>();
+    auto next = std::function<State(State&, const Geometry&, const Config&, prim_array_t&, double, int)>();
 
     if (config.method == "pcm") {
-        next = next_pcm<CoordinateSystem>;
+        next = next_pcm<Geometry>;
     }
     if (config.method == "plm") {
-        next = next_plm<CoordinateSystem>;
+        next = next_plm<Geometry>;
     }
     if (! next) {
         throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
@@ -472,7 +485,6 @@ static void update_state(State& state, const CoordinateSystem& coords, const Con
         auto a = outer_wavespeeds(p, 0);
         return max2(fabs(a[0]), fabs(a[1]));
     };
-
     update_prim(state, p);
 
     auto cfl_number = 0.4;
@@ -486,19 +498,19 @@ static void update_state(State& state, const CoordinateSystem& coords, const Con
     switch (config.rk)
     {
         case 1: {
-            state = next(s0, coords, config, p, dt, 0);
+            state = next(s0, geom, config, p, dt, 0);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, coords, config, p, dt, 0), 1./1);
-            auto s2 = average(s0, next(s1, coords, config, p, dt, 1), 1./2);
+            auto s1 = average(s0, next(s0, geom, config, p, dt, 0), 1./1);
+            auto s2 = average(s0, next(s1, geom, config, p, dt, 1), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, coords, config, p, dt, 0), 1./1);
-            auto s2 = average(s0, next(s1, coords, config, p, dt, 1), 1./4);
-            auto s3 = average(s0, next(s2, coords, config, p, dt, 1), 2./3);
+            auto s1 = average(s0, next(s0, geom, config, p, dt, 0), 1./1);
+            auto s2 = average(s0, next(s1, geom, config, p, dt, 1), 1./4);
+            auto s3 = average(s0, next(s2, geom, config, p, dt, 1), 2./3);
             state = s3;
             break;
         }
@@ -555,10 +567,9 @@ public:
     void initial_state(State& state) const override
     {
         auto setup = setup_from_string(config.setup);
-        auto ri = config.ri;
-        auto ro = config.ro;
-
-        auto initial_conserved = [setup, ri, ro] HD (double x)
+        auto r0 = config.ri;
+        auto r1 = config.ro;
+        auto initial_conserved = [setup, r0, r1] HD (double x)
         {
             switch (setup)
             {
@@ -566,7 +577,7 @@ public:
                     return prim_to_cons(vec(1.0, 0.0, 1e-4));
                 }
             case Setup::sod: {
-                    if (x < (0.5 * (ro - ri))) {
+                    if (x < r0 + 0.5 * (r1 - r0)) {
                         return prim_to_cons(vec(1.0, 0.0, 1.0));
                     } else {
                         return prim_to_cons(vec(0.1, 0.0, 0.125));
@@ -588,26 +599,49 @@ public:
     }
     void update(State& state) const override
     {
+        switch (coords_from_string(config.coords))
+        {
+        case CoordinateSystem::planar: return update_planar(state);
+        case CoordinateSystem::spherical: return update_spherical(state);
+        }
+    }
+    void update_planar(State& state) const
+    {
+        auto ni = config.num_zones;
+        auto x0 = config.ri;
+        auto x1 = config.ro;
+        auto dx = (x1 - x0) / ni;
+        auto iv = range(ni + 1);
+        auto ic = range(ni);
+        auto rf = iv.map([x0, dx] HD (int i) -> double { return x0 + dx * i; } );
+        auto da = rf.map([] HD (double) -> double { return 1.0; });
+        auto dv = ic.map([dx] HD (int) -> double { return dx; });
+        auto st = [] HD (prim_t p, double rm, double rp) -> cons_t { return cons_t{}; };
+        auto geom = grid_geometry(rf, da, dv, st);
+        update_state(state, geom, config);
+    }
+    void update_spherical(State& state) const
+    {
         auto ni = config.num_zones;
         auto r0 = config.ri;
         auto r1 = config.ro;
         auto dr = (r1 - r0) / ni;
         auto iv = range(ni + 1);
         auto ic = range(ni);
-        auto rf = iv.map([r0, dr] HD (int i) { return r0 + dr * i; } );
-        auto da = rf.map([] HD (double r) { return r * r; });
-        auto dv = ic.map([rf] HD (int i)
+        auto rf = iv.map([r0, dr] HD (int i) -> double { return r0 + dr * i; } );
+        auto da = rf.map([] HD (double r) -> double { return r * r; });
+        auto dv = ic.map([rf] HD (int i) -> double
         {
-            auto r0 = rf[i];
+            auto r0 = rf[i + 0];
             auto r1 = rf[i + 1];
             return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
         });
-        auto st = [] HD (prim_t p, double rm, double rp)
+        auto st = [] HD (prim_t p, double rm, double rp) -> cons_t
         {
             return spherical_geometry_source_terms(p, rm, rp);
         };
-        auto coords = coordinate_system(rf, da, dv, st);
-        update_state(state, coords, config);
+        auto geom = grid_geometry(rf, da, dv, st);
+        update_state(state, geom, config);
     }
     bool should_continue(const State& state) const override
     {
