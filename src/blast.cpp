@@ -319,16 +319,16 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto dr = (r1 - r0) / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
-    auto interior_faces = iv.space().contract(1);
-    auto interior_cells = ic.space().contract(1);
-    auto rf = iv.map([r0, dr] (int i) { return r0 + dr * i; } );
-    auto da = rf.map([] (double r) { return r * r; });
-    auto dv = ic.map([rf] (int i)
+    auto rf = iv.map([r0, dr] HD (int i) { return r0 + dr * i; } );
+    auto da = rf.map([] HD (double r) { return r * r; });
+    auto dv = ic.map([rf] HD (int i)
     {
         auto r0 = rf[i];
         auto r1 = rf[i + 1];
         return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
     });
+    auto interior_faces = iv.space().contract(1);
+    auto interior_cells = ic.space().contract(1);
 
     if (prim_dirty) {
         update_prim(state, p);
@@ -375,17 +375,17 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
     auto dr = (r1 - r0) / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
-    auto gradient_cells = ic.space().contract(1);
-    auto interior_faces = iv.space().contract(2);
-    auto interior_cells = ic.space().contract(2);
-    auto rf = iv.map([r0, dr] (int i) { return r0 + dr * i; } );
-    auto da = rf.map([] (double r) { return r * r; });
-    auto dv = ic.map([rf] (int i)
+    auto rf = iv.map([r0, dr] HD (int i) { return r0 + dr * i; } );
+    auto da = rf.map([] HD (double r) { return r * r; });
+    auto dv = ic.map([rf] HD (int i)
     {
         auto r0 = rf[i];
         auto r1 = rf[i + 1];
         return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
     });
+    auto gradient_cells = ic.space().contract(1);
+    auto interior_faces = iv.space().contract(2);
+    auto interior_cells = ic.space().contract(2);
 
     if (prim_dirty) {
         update_prim(state, p);
