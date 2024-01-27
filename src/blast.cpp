@@ -195,7 +195,7 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     return (fl * ap - fr * am - (ul - ur) * ap * am) / (ap - am);
 };
 
-HD static auto geometric_source_terms(prim_t p, double r0, double r1)
+HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1)
 {
     // Eqn A8 in Zhang & MacFadyen (2006), integrated over the spherical shell
     // between r0 and r1, and specializing to radial velocity only.
@@ -203,6 +203,33 @@ HD static auto geometric_source_terms(prim_t p, double r0, double r1)
     auto dr2 = pow(r1, 2) - pow(r0, 2);
     auto srdot = pg * dr2;
     return cons_t{0.0, srdot, 0.0};
+}
+
+
+
+
+template<class FacePosition, class FaceArea, class CellVolume, class GeometricSourceTerms>
+struct coordinate_system_t
+{
+    array_t<1, FacePosition> face_position;
+    array_t<1, FaceArea> face_area;
+    array_t<1, CellVolume> cell_volume;
+    GeometricSourceTerms geometric_source_terms;
+};
+
+template<class FacePosition, class FaceArea, class CellVolume, class GeometricSourceTerms>
+auto coordinate_system(
+    array_t<1, FacePosition> face_position,
+    array_t<1, FaceArea> face_area,
+    array_t<1, CellVolume> cell_volume,
+    GeometricSourceTerms geometric_source_terms)
+{
+    return coordinate_system_t<FacePosition, FaceArea, CellVolume, GeometricSourceTerms>{
+        face_position,
+        face_area,
+        cell_volume,
+        geometric_source_terms,
+    };
 }
 
 
@@ -310,25 +337,21 @@ static void update_prim(const State& state, prim_array_t& p)
     }).cache_unwrap();
 }
 
-static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+
+
+
+template<class CoordinateSystem>
+static State next_pcm(const State& state, const CoordinateSystem& coords, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
-    auto ni = config.num_zones;
-    auto r0 = config.ri;
-    auto r1 = config.ro;
-    auto dr = (r1 - r0) / ni;
-    auto iv = range(ni + 1);
-    auto ic = range(ni);
-    auto rf = iv.map([r0, dr] HD (int i) { return r0 + dr * i; } );
-    auto da = rf.map([] HD (double r) { return r * r; });
-    auto dv = ic.map([rf] HD (int i)
-    {
-        auto r0 = rf[i];
-        auto r1 = rf[i + 1];
-        return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
-    });
-    auto interior_faces = iv.space().contract(1);
-    auto interior_cells = ic.space().contract(1);
+    auto rf = coords.face_position;
+    auto da = coords.face_area;
+    auto dv = coords.cell_volume;
+    auto st = coords.geometric_source_terms;
+    auto ic = range(dv.space());
+    auto iv = range(rf.space());
+    auto interior_cells = ic.space().contract(2);
+    auto interior_faces = iv.space().contract(2);
 
     if (prim_dirty) {
         update_prim(state, p);
@@ -343,7 +366,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([rf, da, dv, fhat, p] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, dv, st, fhat, p] HD (int i)
     {
         auto rm = rf[i + 0];
         auto rp = rf[i + 1];
@@ -351,7 +374,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         auto ap = da[i + 1];
         auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
-        auto udot = geometric_source_terms(p[i], rm, rp);
+        auto udot = st(p[i], rm, rp);
         return (fm * am - fp * ap + udot) / dv[i];
     }) * dt;
 
@@ -366,26 +389,19 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 
 
 
-static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+template<class CoordinateSystem>
+static State next_plm(const State& state, const CoordinateSystem& coords, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
-    auto ni = config.num_zones;
-    auto r0 = config.ri;
-    auto r1 = config.ro;
-    auto dr = (r1 - r0) / ni;
-    auto iv = range(ni + 1);
-    auto ic = range(ni);
-    auto rf = iv.map([r0, dr] HD (int i) { return r0 + dr * i; } );
-    auto da = rf.map([] HD (double r) { return r * r; });
-    auto dv = ic.map([rf] HD (int i)
-    {
-        auto r0 = rf[i];
-        auto r1 = rf[i + 1];
-        return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
-    });
+    auto rf = coords.face_position;
+    auto da = coords.face_area;
+    auto dv = coords.cell_volume;
+    auto st = coords.geometric_source_terms;
+    auto ic = range(dv.space());
+    auto iv = range(rf.space());
     auto gradient_cells = ic.space().contract(1);
-    auto interior_faces = iv.space().contract(2);
     auto interior_cells = ic.space().contract(2);
+    auto interior_faces = iv.space().contract(2);
 
     if (prim_dirty) {
         update_prim(state, p);
@@ -414,7 +430,7 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([rf, da, dv, fhat, p] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, dv, st, fhat, p] HD (int i)
     {
         auto rm = rf[i + 0];
         auto rp = rf[i + 1];
@@ -422,7 +438,7 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         auto ap = da[i + 1];
         auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
-        auto udot = geometric_source_terms(p[i], rm, rp);
+        auto udot = st(p[i], rm, rp);
         return (fm * am - fp * ap + udot) / dv[i];
     }) * dt;
 
@@ -435,17 +451,17 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
 
 
 
-
-static void update_state(State& state, const Config& config)
+template<class CoordinateSystem>
+static void update_state(State& state, const CoordinateSystem& coords, const Config& config)
 {
     static prim_array_t p;
-    auto next = std::function<State(State&, const Config&, prim_array_t&, double, int)>();
+    auto next = std::function<State(State&, const CoordinateSystem&, const Config&, prim_array_t&, double, int)>();
 
     if (config.method == "pcm") {
-        next = next_pcm;
+        next = next_pcm<CoordinateSystem>;
     }
     if (config.method == "plm") {
-        next = next_plm;
+        next = next_plm<CoordinateSystem>;
     }
     if (! next) {
         throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
@@ -470,19 +486,19 @@ static void update_state(State& state, const Config& config)
     switch (config.rk)
     {
         case 1: {
-            state = next(s0, config, p, dt, 0);
+            state = next(s0, coords, config, p, dt, 0);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, config, p, dt, 0), 1./1);
-            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./2);
+            auto s1 = average(s0, next(s0, coords, config, p, dt, 0), 1./1);
+            auto s2 = average(s0, next(s1, coords, config, p, dt, 1), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, config, p, dt, 0), 1./1);
-            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./4);
-            auto s3 = average(s0, next(s2, config, p, dt, 1), 2./3);
+            auto s1 = average(s0, next(s0, coords, config, p, dt, 0), 1./1);
+            auto s2 = average(s0, next(s1, coords, config, p, dt, 1), 1./4);
+            auto s3 = average(s0, next(s2, coords, config, p, dt, 1), 2./3);
             state = s3;
             break;
         }
@@ -572,7 +588,26 @@ public:
     }
     void update(State& state) const override
     {
-        update_state(state, config);
+        auto ni = config.num_zones;
+        auto r0 = config.ri;
+        auto r1 = config.ro;
+        auto dr = (r1 - r0) / ni;
+        auto iv = range(ni + 1);
+        auto ic = range(ni);
+        auto rf = iv.map([r0, dr] HD (int i) { return r0 + dr * i; } );
+        auto da = rf.map([] HD (double r) { return r * r; });
+        auto dv = ic.map([rf] HD (int i)
+        {
+            auto r0 = rf[i];
+            auto r1 = rf[i + 1];
+            return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
+        });
+        auto st = [] HD (prim_t p, double rm, double rp)
+        {
+            return spherical_geometry_source_terms(p, rm, rp);
+        };
+        auto coords = coordinate_system(rf, da, dv, st);
+        update_state(state, coords, config);
     }
     bool should_continue(const State& state) const override
     {
