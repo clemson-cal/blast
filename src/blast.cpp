@@ -314,11 +314,21 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 {
     auto u = state.cons;
     auto ni = config.num_zones;
-    auto dx = 1.0 / ni;
+    auto r0 = config.ri;
+    auto r1 = config.ro;
+    auto dr = (r1 - r0) / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
     auto interior_faces = iv.space().contract(1);
     auto interior_cells = ic.space().contract(1);
+    auto rf = iv.map([r0, dr] (int i) { return r0 + dr * i; } );
+    auto da = rf.map([] (double r) { return r * r; });
+    auto dv = ic.map([rf] (int i)
+    {
+        auto r0 = rf[i];
+        auto r1 = rf[i + 1];
+        return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
+    });
 
     if (prim_dirty) {
         update_prim(state, p);
@@ -333,12 +343,17 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([fhat] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, dv, fhat, p] HD (int i)
     {
-        auto fm = fhat[i];
+        auto rm = rf[i + 0];
+        auto rp = rf[i + 1];
+        auto am = da[i + 0];
+        auto ap = da[i + 1];
+        auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
-        return fp - fm;
-    }) * (-dt / dx);
+        auto udot = geometric_source_terms(p[i], rm, rp);
+        return (fm * am - fp * ap + udot) / dv[i];
+    }) * dt;
 
     return State{
         state.time + dt,
@@ -355,27 +370,22 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
 {
     auto u = state.cons;
     auto ni = config.num_zones;
-    auto ri = config.ri;
-    auto ro = config.ro;
-    auto dx = (ro - ri) / ni;
+    auto r0 = config.ri;
+    auto r1 = config.ro;
+    auto dr = (r1 - r0) / ni;
     auto iv = range(ni + 1);
     auto ic = range(ni);
     auto gradient_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(2);
     auto interior_cells = ic.space().contract(2);
-
-    auto face_coordinates = [dx, ri] (int i)
+    auto rf = iv.map([r0, dr] (int i) { return r0 + dr * i; } );
+    auto da = rf.map([] (double r) { return r * r; });
+    auto dv = ic.map([rf] (int i)
     {
-        return i * dx + ri;
-    };
-    auto face_areas = [] (double r)
-    {
-        return r * r;
-    };
-    auto cell_volumes = [] (double r0, double r1)
-    {
+        auto r0 = rf[i];
+        auto r1 = rf[i + 1];
         return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
-    };
+    });
 
     if (prim_dirty) {
         update_prim(state, p);
@@ -404,17 +414,16 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([fhat, p, face_coordinates, face_areas, cell_volumes] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, dv, fhat, p] HD (int i)
     {
-        auto rm = face_coordinates(i + 0);
-        auto rp = face_coordinates(i + 1);
-        auto am = face_areas(rm);
-        auto ap = face_areas(rp);
-        auto dv = cell_volumes(rm, rp);
-        auto fm = fhat[i];
+        auto rm = rf[i + 0];
+        auto rp = rf[i + 1];
+        auto am = da[i + 0];
+        auto ap = da[i + 1];
+        auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
         auto udot = geometric_source_terms(p[i], rm, rp);
-        return (fm * am - fp * ap + udot) / dv;
+        return (fm * am - fp * ap + udot) / dv[i];
     }) * dt;
 
     return State{
@@ -537,22 +546,22 @@ public:
         {
             switch (setup)
             {
-            case Setup::uniform:
-                return prim_to_cons(vec(1.0, 0.0, 1e-4));
-            case Setup::sod:
-                if (x < (0.5 * (ro - ri))) {
-                    return prim_to_cons(vec(1.0, 0.0, 1.0));
-                } else {
-                    return prim_to_cons(vec(0.1, 0.0, 0.125));
+            case Setup::uniform: {
+                    return prim_to_cons(vec(1.0, 0.0, 1e-4));
                 }
-            case Setup::wind:
-                {
+            case Setup::sod: {
+                    if (x < (0.5 * (ro - ri))) {
+                        return prim_to_cons(vec(1.0, 0.0, 1.0));
+                    } else {
+                        return prim_to_cons(vec(0.1, 0.0, 0.125));
+                    }
+                }
+            case Setup::wind: {
                     auto rho = 1.0 / x / x;
                     auto pre = 1e-6 * pow(rho, gamma); // uniform entropy
                     return prim_to_cons(vec(rho, 0.1, pre));
                 }
-            case Setup::bmk:
-                {
+            case Setup::bmk: {
                     throw std::runtime_error("bmk not implemented yet");
                 }
             }
