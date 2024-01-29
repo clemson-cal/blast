@@ -39,9 +39,6 @@ using cons_array_t = memory_backed_array_t<1, cons_t, ref_counted_ptr_t>;
 using prim_array_t = memory_backed_array_t<1, prim_t, ref_counted_ptr_t>;
 using Product = memory_backed_array_t<1, double, ref_counted_ptr_t>;
 
-#define index_density 0
-#define index_pressure 2
-#define index_energy 2
 #define gamma (4.0 / 3.0)
 #define min2(a, b) ((a) < (b) ? (a) : (b))
 #define max2(a, b) ((a) > (b) ? (a) : (b))
@@ -90,15 +87,15 @@ HD static auto beta_component(prim_t p, int axis) -> double
 
 HD static auto enthalpy_density(prim_t p) -> double
 {
-    auto rho = p[index_density];
-    auto pre = p[index_pressure];
+    auto rho = p[0];
+    auto pre = p[2];
     return rho + pre * (1.0 + 1.0 / (gamma - 1.0));
 }
 
 HD static auto prim_to_cons(prim_t p) -> cons_t
 {
-    auto rho = p[index_density];
-    auto pre = p[index_pressure];
+    auto rho = p[0];
+    auto pre = p[2];
     auto w = lorentz_factor(p);
     auto h = enthalpy_density(p) / rho;
     auto m = rho * w;
@@ -112,10 +109,10 @@ HD static auto prim_to_cons(prim_t p) -> cons_t
 HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 {
     auto newton_iter_max = 50;
-    auto error_tolerance = 1e-12 * (cons[index_density] + cons[index_energy]);
+    auto error_tolerance = 1e-12 * (cons[0] + cons[2]);
     auto gm = gamma;
-    auto m = cons[index_density];
-    auto tau = cons[index_energy];
+    auto m = cons[0];
+    auto tau = cons[2];
     auto ss = momentum_squared(cons);
     auto n = 0;
     auto w0 = 0.0;
@@ -150,7 +147,7 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 
 HD static auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
 {
-    double pre = p[index_pressure];
+    double pre = p[2];
     double vn = beta_component(p, axis);
     auto f = cons_t{};
     f[0] = vn * u[0];
@@ -161,7 +158,7 @@ HD static auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
 
 HD static auto sound_speed_squared(prim_t p) -> double
 {
-    const double pre = p[index_pressure];
+    const double pre = p[2];
     const double rho_h = enthalpy_density(p);
     return gamma * pre / rho_h;
 }
@@ -184,14 +181,21 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
 {
     auto fl = prim_and_cons_to_flux(pl, ul, 0);
     auto fr = prim_and_cons_to_flux(pr, ur, 0);
+    //
+    // These are wave speed estimates from Eqn. 51 in MM03: (they don't work)
+    //
+    // auto vb = 0.5 * (beta_component(pl, 0) + beta_component(pr, 0));
+    // auto cs = 0.5 * (sqrt(sound_speed_squared(pl) + sqrt(sound_speed_squared(pr))));
+    // auto am = min2(0.0, (vb - cs) / (1.0 - vb * cs));
+    // auto ap = max2(0.0, (vb + cs) / (1.0 + vb * cs));
     auto al = outer_wavespeeds(pl, 0);
     auto ar = outer_wavespeeds(pr, 0);
     auto alm = al[0];
     auto alp = al[1];
     auto arm = ar[0];
     auto arp = ar[1];
-    auto am = min3(alm, arm, 0.0);
-    auto ap = max3(alp, arp, 0.0);
+    auto am = min3(0.0, alm, arm);
+    auto ap = max3(0.0, alp, arp);
     return (fl * ap - fr * am - (ul - ur) * ap * am) / (ap - am);
 };
 
@@ -239,6 +243,7 @@ enum class Setup
 {
     uniform,
     sod,
+    mm96p1,
     wind,
     bmk,
 };
@@ -246,6 +251,7 @@ static Setup setup_from_string(const std::string& name)
 {
     if (name == "uniform") return Setup::uniform;
     if (name == "sod") return Setup::sod;
+    if (name == "mm96p1") return Setup::mm96p1;
     if (name == "wind") return Setup::wind;
     if (name == "bmk") return Setup::bmk;
     throw std::runtime_error("unknown setup " + name);
@@ -464,6 +470,7 @@ static State next_plm(const State& state, const Geometry& geom, const Config& co
 
 
 
+
 template<class Geometry>
 static void update_state(State& state, const Geometry& geom, const Config& config)
 {
@@ -583,9 +590,19 @@ public:
                         return prim_to_cons(vec(0.1, 0.0, 0.125));
                     }
                 }
+            case Setup::mm96p1: {
+                    // Problem 1 from Marti & Muller 1996
+                    if (x < r0 + 0.5 * (r1 - r0)) {
+                        return prim_to_cons(vec(10.0, 0.0, 13.33));
+                    } else {
+                        return prim_to_cons(vec(1.0, 0.0, 1e-8));
+                    }
+                }
             case Setup::wind: {
-                    auto rho = 1.0 / x / x;
-                    auto pre = 1e-6 * pow(rho, gamma); // uniform entropy
+                    auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
+                    auto u = 0.1; // wind gamma-beta
+                    auto rho = f / (x * x * u);
+                    auto pre = 1e-10 * pow(rho, gamma); // uniform specfic entropy
                     return prim_to_cons(vec(rho, 0.1, pre));
                 }
             case Setup::bmk:
@@ -606,7 +623,7 @@ public:
                     if (eta <= 1.0) {
                         return prim_to_cons(vec(rho, gb, pre));
                     } else {
-                        return prim_to_cons(vec(0.01, 0.00, 1.0E-6));
+                        return prim_to_cons(vec(1.0, 0.0, 1e-8));
                     }
                 }
             }
