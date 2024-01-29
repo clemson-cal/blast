@@ -581,7 +581,7 @@ public:
             switch (setup)
             {
             case Setup::uniform: {
-                    return prim_to_cons(vec(1.0, 0.0, 1e-4));
+                    return prim_to_cons(vec(1.0, 0.0, 1.0));
                 }
             case Setup::sod: {
                     if (x < r0 + 0.5 * (r1 - r0)) {
