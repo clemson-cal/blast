@@ -147,8 +147,8 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 
 HD static auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
 {
-    double pre = p[2];
-    double vn = beta_component(p, axis);
+    auto pre = p[2];
+    auto vn = beta_component(p, axis);
     auto f = cons_t{};
     f[0] = vn * u[0];
     f[1] = vn * u[1] + pre * (axis == 0);
@@ -158,24 +158,24 @@ HD static auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
 
 HD static auto sound_speed_squared(prim_t p) -> double
 {
-    const double pre = p[2];
-    const double rho_h = enthalpy_density(p);
+    auto pre = p[2];
+    auto rho_h = enthalpy_density(p);
     return gamma * pre / rho_h;
 }
 
-HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
-{
-    double a2 = sound_speed_squared(p);
-    double uu = gamma_beta_squared(p);
-    double vn = beta_component(p, axis);
-    double vv = uu / (1.0 + uu);
-    double v2 = vn * vn;
-    double k0 = sqrt(a2 * (1.0 - vv) * (1.0 - vv * a2 - v2 * (1.0 - a2)));
-    return vec(
-        (vn * (1.0 - a2) - k0) / (1.0 - vv * a2),
-        (vn * (1.0 - a2) + k0) / (1.0 - vv * a2)
-    );
-}
+// HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
+// {
+//     auto a2 = sound_speed_squared(p);
+//     auto uu = gamma_beta_squared(p);
+//     auto vn = beta_component(p, axis);
+//     auto vv = uu / (1.0 + uu);
+//     auto v2 = vn * vn;
+//     auto k0 = sqrt(a2 * (1.0 - vv) * (1.0 - vv * a2 - v2 * (1.0 - a2)));
+//     return vec(
+//         (vn * (1.0 - a2) - k0) / (1.0 - vv * a2),
+//         (vn * (1.0 - a2) + k0) / (1.0 - vv * a2)
+//     );
+// }
 
 HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_t
 {
@@ -188,12 +188,22 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     // auto cs = 0.5 * (sqrt(sound_speed_squared(pl) + sqrt(sound_speed_squared(pr))));
     // auto am = min2(0.0, (vb - cs) / (1.0 - vb * cs));
     // auto ap = max2(0.0, (vb + cs) / (1.0 + vb * cs));
-    auto al = outer_wavespeeds(pl, 0);
-    auto ar = outer_wavespeeds(pr, 0);
-    auto alm = al[0];
-    auto alp = al[1];
-    auto arm = ar[0];
-    auto arp = ar[1];
+    //
+    // auto al = outer_wavespeeds(pl, 0);
+    // auto ar = outer_wavespeeds(pr, 0);
+    // auto alm = al[0];
+    // auto alp = al[1];
+    // auto arm = ar[0];
+    // auto arp = ar[1];
+
+    auto cl = sqrt(sound_speed_squared(pl));
+    auto cr = sqrt(sound_speed_squared(pr));
+    auto vl = beta_component(pl, 0);
+    auto vr = beta_component(pr, 0);
+    auto alm = (vl - cl) / (1.0 - vl * cl);
+    auto alp = (vl + cl) / (1.0 + vl * cl);
+    auto arm = (vr - cr) / (1.0 - vr * cr);
+    auto arp = (vr + cr) / (1.0 + vr * cr);
     auto am = min3(0.0, alm, arm);
     auto ap = max3(0.0, alp, arp);
     return (fl * ap - fr * am - (ul - ur) * ap * am) / (ap - am);
@@ -487,35 +497,35 @@ static void update_state(State& state, const Geometry& geom, const Config& confi
         throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
     }
 
-    auto wavespeed = [] HD (prim_t p) -> double
-    {
-        auto a = outer_wavespeeds(p, 0);
-        return max2(fabs(a[0]), fabs(a[1]));
-    };
-    update_prim(state, p);
+    // auto wavespeed = [] HD (prim_t p) -> double
+    // {
+    //     auto a = outer_wavespeeds(p, 0);
+    //     return max2(fabs(a[0]), fabs(a[1]));
+    // };
+    // update_prim(state, p);
 
     auto cfl_number = 0.4;
     auto ni = config.num_zones;
     auto ri = config.ri;
     auto ro = config.ro;
     auto dx = (ro - ri) / ni;
-    auto dt = dx / max(p.map(wavespeed)) * cfl_number;
+    auto dt = dx * cfl_number;
     auto s0 = state;
 
     switch (config.rk)
     {
         case 1: {
-            state = next(s0, geom, config, p, dt, 0);
+            state = next(s0, geom, config, p, dt, 1);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, geom, config, p, dt, 0), 1./1);
+            auto s1 = average(s0, next(s0, geom, config, p, dt, 1), 1./1);
             auto s2 = average(s0, next(s1, geom, config, p, dt, 1), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, geom, config, p, dt, 0), 1./1);
+            auto s1 = average(s0, next(s0, geom, config, p, dt, 1), 1./1);
             auto s2 = average(s0, next(s1, geom, config, p, dt, 1), 1./4);
             auto s3 = average(s0, next(s2, geom, config, p, dt, 1), 2./3);
             state = s3;
