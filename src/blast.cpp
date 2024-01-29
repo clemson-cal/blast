@@ -163,39 +163,40 @@ HD static auto sound_speed_squared(prim_t p) -> double
     return gamma * pre / rho_h;
 }
 
-// HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
-// {
-//     auto a2 = sound_speed_squared(p);
-//     auto uu = gamma_beta_squared(p);
-//     auto vn = beta_component(p, axis);
-//     auto vv = uu / (1.0 + uu);
-//     auto v2 = vn * vn;
-//     auto k0 = sqrt(a2 * (1.0 - vv) * (1.0 - vv * a2 - v2 * (1.0 - a2)));
-//     return vec(
-//         (vn * (1.0 - a2) - k0) / (1.0 - vv * a2),
-//         (vn * (1.0 - a2) + k0) / (1.0 - vv * a2)
-//     );
-// }
+HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
+{
+    auto a2 = sound_speed_squared(p);
+    auto uu = gamma_beta_squared(p);
+    auto vn = beta_component(p, axis);
+    auto v2 = vn * vn;
+    // These are the Marti & Muller versions of the eigenvalue formula:
+    // 
+    // auto vv = uu / (1.0 + uu);
+    // auto k0 = sqrt(a2 * (1.0 - vv) * (1.0 - vv * a2 - v2 * (1.0 - a2)));
+    // auto xx = vec(
+    //     (vn * (1.0 - a2) - k0) / (1.0 - vv * a2),
+    //     (vn * (1.0 - a2) + k0) / (1.0 - vv * a2)
+    // );
+    // These are the Mignone & Bodo (2005) versions of the eigenvalue formula:
+    auto g2 = 1.0 + uu;
+    auto s2 = a2 / g2 / (1.0 - a2);
+    auto k0 = sqrt(s2 * (1.0 - v2 + s2));
+    return vec(vn - k0, vn + k0) / (1.0 + s2);
+}
 
 HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_t
 {
     auto fl = prim_and_cons_to_flux(pl, ul, 0);
     auto fr = prim_and_cons_to_flux(pr, ur, 0);
-    //
-    // These are wave speed estimates from Eqn. 51 in MM03: (they don't work)
-    //
-    // auto vb = 0.5 * (beta_component(pl, 0) + beta_component(pr, 0));
-    // auto cs = 0.5 * (sqrt(sound_speed_squared(pl) + sqrt(sound_speed_squared(pr))));
-    // auto am = min2(0.0, (vb - cs) / (1.0 - vb * cs));
-    // auto ap = max2(0.0, (vb + cs) / (1.0 + vb * cs));
-    //
+    // These wave speed estimates are technically valid in 3d:
+    // 
     // auto al = outer_wavespeeds(pl, 0);
     // auto ar = outer_wavespeeds(pr, 0);
-    // auto alm = al[0];
-    // auto alp = al[1];
-    // auto arm = ar[0];
-    // auto arp = ar[1];
-
+    // auto am = min3(0.0, al[0], ar[0]);
+    // auto ap = max3(0.0, al[1], ar[1]);
+    // 
+    // These wave speed estimates should be equivalent to those above, for 1d:
+    // 
     auto cl = sqrt(sound_speed_squared(pl));
     auto cr = sqrt(sound_speed_squared(pr));
     auto vl = beta_component(pl, 0);
@@ -206,6 +207,14 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     auto arp = (vr + cr) / (1.0 + vr * cr);
     auto am = min3(0.0, alm, arm);
     auto ap = max3(0.0, alp, arp);
+    (void)outer_wavespeeds; // silence unused function warning
+    // 
+    // These wave speed estimates are from Schneider et al. (1993):
+    //
+    // auto vb = 0.5 * (vl + vr);
+    // auto cs = 0.5 * (cl + cr);
+    // auto am = min2(0.0, (vb - cs) / (1.0 - vb * cs));
+    // auto ap = max2(0.0, (vb + cs) / (1.0 + vb * cs));
     return (fl * ap - fr * am - (ul - ur) * ap * am) / (ap - am);
 };
 
@@ -290,7 +299,9 @@ struct Config
     int num_zones = 1000;
     int fold = 50;
     int rk = 1;
+    double theta = 1.5;
     double tfinal = 0.0;
+    double cfl = 0.4;
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
@@ -307,7 +318,9 @@ VISITABLE_STRUCT(Config,
     num_zones,
     fold,
     rk,
+    theta,
     tfinal,
+    cfl,
     cpi,
     spi,
     tsi,
@@ -431,12 +444,13 @@ static State next_plm(const State& state, const Geometry& geom, const Config& co
     auto gradient_cells = ic.space().contract(1);
     auto interior_cells = ic.space().contract(2);
     auto interior_faces = iv.space().contract(2);
+    auto plm_theta = config.theta;
 
     if (prim_dirty) {
         update_prim(state, p);
     }
 
-    auto grad = ic[gradient_cells].map([p] HD (int i)
+    auto grad = ic[gradient_cells].map([p, plm_theta] HD (int i)
     {
         auto pl = p[i - 1];
         auto pc = p[i + 0];
@@ -445,7 +459,7 @@ static State next_plm(const State& state, const Geometry& geom, const Config& co
 
         for (int n = 0; n < 3; ++n)
         {
-            gc[n] = plm_minmod(pl[n], pc[n], pr[n], 1.5);
+            gc[n] = plm_minmod(pl[n], pc[n], pr[n], plm_theta);
         }
         return gc;
     }).cache();
@@ -504,12 +518,11 @@ static void update_state(State& state, const Geometry& geom, const Config& confi
     // };
     // update_prim(state, p);
 
-    auto cfl_number = 0.4;
     auto ni = config.num_zones;
     auto ri = config.ri;
     auto ro = config.ro;
     auto dx = (ro - ri) / ni;
-    auto dt = dx * cfl_number;
+    auto dt = dx * config.cfl;
     auto s0 = state;
 
     switch (config.rk)
