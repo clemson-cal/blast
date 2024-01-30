@@ -353,7 +353,7 @@ VISITABLE_STRUCT(State, time, iter, cons);
 
 static State average(const State& a, const State& b, double x)
 {
-    return x == 1.0 ? a : State{
+    return x == 1.0 ? b : State{
         (a.time * (1.0 - x) + b.time * x),
         (a.iter * (1.0 - x) + b.iter * x),
         (a.cons * (1.0 - x) + b.cons * x).cache()
