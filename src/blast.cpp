@@ -196,7 +196,6 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     // auto ap = max3(0.0, al[1], ar[1]);
     // 
     // These wave speed estimates should be equivalent to those above, for 1d:
-    // 
     auto cl = sqrt(sound_speed_squared(pl));
     auto cr = sqrt(sound_speed_squared(pr));
     auto vl = beta_component(pl, 0);
@@ -208,7 +207,6 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     auto am = min3(0.0, alm, arm);
     auto ap = max3(0.0, alp, arp);
     (void)outer_wavespeeds; // silence unused function warning
-    // 
     // These wave speed estimates are from Schneider et al. (1993):
     //
     // auto vb = 0.5 * (vl + vr);
@@ -296,17 +294,15 @@ static CoordinateSystem coords_from_string(const std::string& name)
  */
 struct Config
 {
-    int num_zones = 1000;
     int fold = 50;
-    int rk = 1;
+    int rk = 2;
     double theta = 1.5;
     double tfinal = 0.0;
     double cfl = 0.4;
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
-    double ri = 1.0;
-    double ro = 10.0;
+    vec_t<double, 3> domain; // x0, x1, dx
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
@@ -315,7 +311,6 @@ struct Config
     std::string coords = "spherical"; // or planar
 };
 VISITABLE_STRUCT(Config,
-    num_zones,
     fold,
     rk,
     theta,
@@ -324,8 +319,7 @@ VISITABLE_STRUCT(Config,
     cpi,
     spi,
     tsi,
-    ri,
-    ro,
+    domain,
     sp,
     ts,
     outdir,
@@ -511,6 +505,9 @@ static void update_state(State& state, const Geometry& geom, const Config& confi
         throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
     }
 
+    // Wavespeed calculation is presently disabled, max wave speed of c is
+    // assumed.
+    //
     // auto wavespeed = [] HD (prim_t p) -> double
     // {
     //     auto a = outer_wavespeeds(p, 0);
@@ -518,10 +515,7 @@ static void update_state(State& state, const Geometry& geom, const Config& confi
     // };
     // update_prim(state, p);
 
-    auto ni = config.num_zones;
-    auto ri = config.ri;
-    auto ro = config.ro;
-    auto dx = (ro - ri) / ni;
+    auto dx = config.domain[2];
     auto dt = dx * config.cfl;
     auto s0 = state;
 
@@ -552,12 +546,23 @@ static void update_state(State& state, const Geometry& geom, const Config& confi
 
 static auto cell_coordinates(const Config& config)
 {
-    auto ni = config.num_zones;
-    auto ri = config.ri;
-    auto ro = config.ro;
-    auto dx = (ro - ri) / ni;
+    auto x0 = config.domain[0];
+    auto x1 = config.domain[1];
+    auto dx = config.domain[2];
+    auto ni = int((x1 - x0) / dx);
     auto ic = range(ni);
-    auto xc = (ic + 0.5) * dx + ri;
+    auto xc = (ic + 0.5) * dx + x0;
+    return xc;
+}
+
+static auto face_coordinates(const Config& config)
+{
+    auto x0 = config.domain[0];
+    auto x1 = config.domain[1];
+    auto dx = config.domain[2];
+    auto ni = int((x1 - x0) / dx);
+    auto ic = range(ni + 1);
+    auto xc = ic * dx + x0;
     return xc;
 }
 
@@ -586,6 +591,10 @@ public:
     {
         return config.outdir.data();
     }
+    bool use_persistent_session() const override
+    {
+        return false;
+    }
     double get_time(const State& state) const override
     {
         return state.time;
@@ -597,17 +606,21 @@ public:
     void initial_state(State& state) const override
     {
         auto setup = setup_from_string(config.setup);
-        auto r0 = config.ri;
-        auto r1 = config.ro;
-        auto initial_conserved = [setup, r0, r1] HD (double x)
+        auto x0 = config.domain[0];
+        auto x1 = config.domain[1];
+        auto initial_conserved = [setup, x0, x1] HD (double x)
         {
             switch (setup)
             {
             case Setup::uniform: {
+                    // Uniform gas (tests spherical geometry source terms)
+                    //
                     return prim_to_cons(vec(1.0, 0.0, 1.0));
                 }
             case Setup::sod: {
-                    if (x < r0 + 0.5 * (r1 - r0)) {
+                    // Standard Sod shocktube (easy problem)
+                    //
+                    if (x < x0 + 0.5 * (x1 - x0)) {
                         return prim_to_cons(vec(1.0, 0.0, 1.0));
                     } else {
                         return prim_to_cons(vec(0.1, 0.0, 0.125));
@@ -615,13 +628,16 @@ public:
                 }
             case Setup::mm96p1: {
                     // Problem 1 from Marti & Muller 1996
-                    if (x < r0 + 0.5 * (r1 - r0)) {
+                    //
+                    if (x < x0 + 0.5 * (x1 - x0)) {
                         return prim_to_cons(vec(10.0, 0.0, 13.33));
                     } else {
                         return prim_to_cons(vec(1.0, 0.0, 1e-8));
                     }
                 }
             case Setup::wind: {
+                    // Steady-state cold wind, sub-relativistic velocity
+                    //
                     auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
                     auto u = 0.1; // wind gamma-beta
                     auto rho = f / (x * x * u);
@@ -630,20 +646,21 @@ public:
                 }
             case Setup::bmk:
                 {
+                    // Blandford-Mckee ultra-relativistic blast wave
+                    //
                     auto shock_radius = 1.0;
                     auto eta = x / shock_radius;
-                    auto Gamma = 10.0;
-                    auto xi = Gamma * Gamma * (eta - 1.0);
-                    auto f = 0.5 - 8.0 * xi;
-                    auto g = 2.0 * sqrt(2.0) * pow((1.0 - 8.0 * xi), (-5.0 / 4.0));
-                    auto h = (2.0 / 3.0) * pow((1.0 - 8.0 * xi), (-17.0 / 12.0));
-                    auto rho = Gamma * g;
-                    auto v = sqrt(1.0 - 1.0 / Gamma / Gamma);
-                    auto vel = v * (1.0 - (1.0 / Gamma / Gamma) * f);
-                    auto gb = vel / sqrt(1.0 - vel * vel);
-                    auto pre = Gamma * Gamma * h;
-
-                    if (eta <= 1.0) {
+                    if (eta < 1.0) {
+                        auto Gamma = 10.0;
+                        auto xi = Gamma * Gamma * (eta - 1.0);
+                        auto f = 0.5 - 8.0 * xi;
+                        auto g = 2.0 * sqrt(2.0) * pow((1.0 - 8.0 * xi), (-5.0 / 4.0));
+                        auto h = (2.0 / 3.0) * pow((1.0 - 8.0 * xi), (-17.0 / 12.0));
+                        auto rho = Gamma * g;
+                        auto vsh = sqrt(1.0 - 1.0 / Gamma / Gamma);
+                        auto vel = vsh * (1.0 - (1.0 / Gamma / Gamma) * f);
+                        auto gb = vel / sqrt(1.0 - vel * vel);
+                        auto pre = Gamma * Gamma * h;
                         return prim_to_cons(vec(rho, gb, pre));
                     } else {
                         return prim_to_cons(vec(1.0, 0.0, 1e-8));
@@ -665,40 +682,33 @@ public:
     }
     void update_planar(State& state) const
     {
-        auto ni = config.num_zones;
-        auto x0 = config.ri;
-        auto x1 = config.ro;
-        auto dx = (x1 - x0) / ni;
-        auto iv = range(ni + 1);
-        auto ic = range(ni);
-        auto rf = iv.map([x0, dx] HD (int i) -> double { return x0 + dx * i; } );
-        auto da = rf.map([] HD (double) -> double { return 1.0; });
-        auto dv = ic.map([dx] HD (int) -> double { return dx; });
+        auto xc = cell_coordinates(config);
+        auto xf = face_coordinates(config);
+        auto ic = range(xc.space());
+        auto da = xf.map([] HD (double) -> double { return 1.0; });
+        auto dv = ic.map([xf] HD (int i) -> double { return xf[i + 1] - xf[i]; });
         auto st = [] HD (prim_t p, double rm, double rp) -> cons_t { return cons_t{}; };
-        auto geom = grid_geometry(rf, da, dv, st);
+        auto geom = grid_geometry(xf, da, dv, st);
         update_state(state, geom, config);
     }
     void update_spherical(State& state) const
     {
-        auto ni = config.num_zones;
-        auto r0 = config.ri;
-        auto r1 = config.ro;
-        auto dr = (r1 - r0) / ni;
-        auto iv = range(ni + 1);
-        auto ic = range(ni);
-        auto rf = iv.map([r0, dr] HD (int i) -> double { return r0 + dr * i; } );
+        auto rc = cell_coordinates(config);
+        auto rf = face_coordinates(config);
+        auto ic = range(rc.space());
         auto da = rf.map([] HD (double r) -> double { return r * r; });
         auto dv = ic.map([rf] HD (int i) -> double
         {
-            auto r0 = rf[i + 0];
+            auto x0 = rf[i + 0];
             auto r1 = rf[i + 1];
-            return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
+            return (r1 * r1 * r1 - x0 * x0 * x0) / 3.0;
         });
         auto st = [] HD (prim_t p, double rm, double rp) -> cons_t
         {
             return spherical_geometry_source_terms(p, rm, rp);
         };
         auto geom = grid_geometry(rf, da, dv, st);
+        update_state(state, geom, config);
         update_state(state, geom, config);
     }
     bool should_continue(const State& state) const override
@@ -770,7 +780,7 @@ public:
         return format("[%04d] t=%lf Mzps=%.2lf",
             get_iteration(state),
             get_time(state),
-            1e-6 * config.num_zones / secs_per_update);
+            1e-6 * state.cons.size() / secs_per_update);
     }
 };
 
