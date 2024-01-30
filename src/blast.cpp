@@ -608,7 +608,7 @@ public:
         auto setup = setup_from_string(config.setup);
         auto x0 = config.domain[0];
         auto x1 = config.domain[1];
-        auto initial_conserved = [setup, x0, x1] HD (double x)
+        auto initial_conserved = [setup, x0, x1] HD (double x) -> cons_t
         {
             switch (setup)
             {
@@ -666,6 +666,7 @@ public:
                         return prim_to_cons(vec(1.0, 0.0, 1e-8));
                     }
                 }
+            default: return {};
             }
         };
         state.time = 0.0;
