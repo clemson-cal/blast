@@ -304,7 +304,8 @@ struct Config
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
-    vec_t<double, 3> domain = {{1.0, 10.0, 1e-2}}; // x0, x1, dx
+    double dx = 1e-2;
+    vec_t<double, 2> domain = {{1.0, 10.0}}; // x0, x1
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
@@ -321,6 +322,7 @@ VISITABLE_STRUCT(Config,
     cpi,
     spi,
     tsi,
+    dx,
     domain,
     sp,
     ts,
@@ -517,7 +519,7 @@ static void update_state(State& state, const Geometry& geom, const Config& confi
     // };
     // update_prim(state, p);
 
-    auto dx = config.domain[2];
+    auto dx = config.dx;
     auto dt = dx * config.cfl;
     auto s0 = state;
 
@@ -550,7 +552,7 @@ static auto cell_coordinates(const Config& config)
 {
     auto x0 = config.domain[0];
     auto x1 = config.domain[1];
-    auto dx = config.domain[2];
+    auto dx = config.dx;
     auto ni = int((x1 - x0) / dx);
     auto ic = range(ni);
     auto xc = (ic + 0.5) * dx + x0;
@@ -561,7 +563,7 @@ static auto face_coordinates(const Config& config)
 {
     auto x0 = config.domain[0];
     auto x1 = config.domain[1];
-    auto dx = config.domain[2];
+    auto dx = config.dx;
     auto ni = int((x1 - x0) / dx);
     auto ic = range(ni + 1);
     auto xc = ic * dx + x0;
