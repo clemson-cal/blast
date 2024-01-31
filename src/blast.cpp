@@ -307,6 +307,7 @@ struct Config
     double dx = 1e-2;
     double bmk_gamma_shock = 5.0;
     vec_t<double, 2> domain = {{1.0, 10.0}}; // x0, x1
+    vec_t<char, 2> bc = {{'f', 'f'}};
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
@@ -326,6 +327,7 @@ VISITABLE_STRUCT(Config,
     dx,
     bmk_gamma_shock,
     domain,
+    bc,
     sp,
     ts,
     outdir,
@@ -615,7 +617,7 @@ public:
         auto x0 = config.domain[0];
         auto x1 = config.domain[1];
         auto bmk_gamma_shock = config.bmk_gamma_shock;
-        auto initial_primitive = [setup, x0, x1, bmk_gamma_shock] HD (double x) -> prim_t
+        auto initial_primitive = [=] HD (double x) -> prim_t
         {
             switch (setup)
             {
@@ -651,8 +653,7 @@ public:
                     auto pre = 1e-10 * pow(rho, gamma); // uniform specfic entropy
                     return vec(rho, 0.1, pre);
                 }
-            case Setup::bmk:
-                {
+            case Setup::bmk: {
                     // Blandford-Mckee ultra-relativistic blast wave
                     //
                     auto shock_radius = 1.0;
