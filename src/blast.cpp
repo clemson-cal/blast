@@ -132,6 +132,8 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 
         if (n == newton_iter_max)
         {
+            // WARNING: none values are silently unwrapped in the code below,
+            // because the cache_unwrap facility in vapor is currently broken.
             return none<prim_t>();
         }
         if (fabs(f) < error_tolerance)
@@ -369,8 +371,8 @@ static void update_prim(const State& state, prim_array_t& p)
     {
         auto ui = u[i];
         auto pi = p[i];
-        return cons_to_prim(ui, pi[2]);
-    }).cache_unwrap();
+        return cons_to_prim(ui, pi[2]).get();
+    }).cache();
 }
 
 
@@ -751,13 +753,13 @@ public:
     {
         auto cons_field = [] (uint n) {
             return [n] HD (cons_t u) {
-                return cons_to_prim(u).map(take_nth_t<prim_t>{n});
+                return cons_to_prim(u).get()[n];
             };
         };
         switch (column) {
-        case 0: return state.cons.map(cons_field(0)).cache_unwrap();
-        case 1: return state.cons.map(cons_field(1)).cache_unwrap();
-        case 2: return state.cons.map(cons_field(2)).cache_unwrap();
+        case 0: return state.cons.map(cons_field(0)).cache();
+        case 1: return state.cons.map(cons_field(1)).cache();
+        case 2: return state.cons.map(cons_field(2)).cache();
         case 3: return cell_coordinates(config).cache();
         }
         return {};
