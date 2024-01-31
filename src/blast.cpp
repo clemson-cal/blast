@@ -798,8 +798,7 @@ int main(int argc, const char **argv)
         return Blast().run(argc, argv);
     }
     catch (const std::exception& e) {
-        vapor::print(e.what());
-        vapor::print("\n");
+        vapor::print(e.what(), "\n");
     }
     return 0;
 }
