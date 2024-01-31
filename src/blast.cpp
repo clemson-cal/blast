@@ -713,7 +713,6 @@ public:
         };
         auto geom = grid_geometry(rf, da, dv, st);
         update_state(state, geom, config);
-        update_state(state, geom, config);
     }
     bool should_continue(const State& state) const override
     {
