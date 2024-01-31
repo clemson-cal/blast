@@ -302,12 +302,12 @@ struct Config
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
-    vec_t<double, 3> domain; // x0, x1, dx
+    vec_t<double, 3> domain = {{1.0, 10.0, 1e-2}}; // x0, x1, dx
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
     std::string method = "plm";
-    std::string setup = "sod";
+    std::string setup = "uniform";
     std::string coords = "spherical"; // or planar
 };
 VISITABLE_STRUCT(Config,
@@ -608,31 +608,31 @@ public:
         auto setup = setup_from_string(config.setup);
         auto x0 = config.domain[0];
         auto x1 = config.domain[1];
-        auto initial_conserved = [setup, x0, x1] HD (double x) -> cons_t
+        auto initial_primitive = [setup, x0, x1] HD (double x) -> prim_t
         {
             switch (setup)
             {
             case Setup::uniform: {
                     // Uniform gas (tests spherical geometry source terms)
                     //
-                    return prim_to_cons(vec(1.0, 0.0, 1.0));
+                    return vec(1.0, 0.0, 1.0);
                 }
             case Setup::sod: {
                     // Standard Sod shocktube (easy problem)
                     //
                     if (x < x0 + 0.5 * (x1 - x0)) {
-                        return prim_to_cons(vec(1.0, 0.0, 1.0));
+                        return vec(1.0, 0.0, 1.0);
                     } else {
-                        return prim_to_cons(vec(0.1, 0.0, 0.125));
+                        return vec(0.1, 0.0, 0.125);
                     }
                 }
             case Setup::mm96p1: {
                     // Problem 1 from Marti & Muller 1996
                     //
                     if (x < x0 + 0.5 * (x1 - x0)) {
-                        return prim_to_cons(vec(10.0, 0.0, 13.33));
+                        return vec(10.0, 0.0, 13.33);
                     } else {
-                        return prim_to_cons(vec(1.0, 0.0, 1e-8));
+                        return vec(1.0, 0.0, 1e-8);
                     }
                 }
             case Setup::wind: {
@@ -642,7 +642,7 @@ public:
                     auto u = 0.1; // wind gamma-beta
                     auto rho = f / (x * x * u);
                     auto pre = 1e-10 * pow(rho, gamma); // uniform specfic entropy
-                    return prim_to_cons(vec(rho, 0.1, pre));
+                    return vec(rho, 0.1, pre);
                 }
             case Setup::bmk:
                 {
@@ -661,14 +661,15 @@ public:
                         auto vel = vsh * (1.0 - (1.0 / Gamma / Gamma) * f);
                         auto gb = vel / sqrt(1.0 - vel * vel);
                         auto pre = Gamma * Gamma * h;
-                        return prim_to_cons(vec(rho, gb, pre));
+                        return vec(rho, gb, pre);
                     } else {
-                        return prim_to_cons(vec(1.0, 0.0, 1e-8));
+                        return vec(1.0, 0.0, 1e-8);
                     }
                 }
             default: return {};
             }
         };
+        auto initial_conserved = [=] (double x) { return prim_to_cons(initial_primitive(x)); };
         state.time = 0.0;
         state.iter = 0.0;
         state.cons = cell_coordinates(config).map(initial_conserved).cache();
