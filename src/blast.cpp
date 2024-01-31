@@ -305,6 +305,7 @@ struct Config
     double spi = 0.0;
     double tsi = 0.0;
     double dx = 1e-2;
+    double bmk_gamma_shock = 5.0;
     vec_t<double, 2> domain = {{1.0, 10.0}}; // x0, x1
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
@@ -323,6 +324,7 @@ VISITABLE_STRUCT(Config,
     spi,
     tsi,
     dx,
+    bmk_gamma_shock,
     domain,
     sp,
     ts,
@@ -612,7 +614,8 @@ public:
         auto setup = setup_from_string(config.setup);
         auto x0 = config.domain[0];
         auto x1 = config.domain[1];
-        auto initial_primitive = [setup, x0, x1] HD (double x) -> prim_t
+        auto bmk_gamma_shock = config.bmk_gamma_shock;
+        auto initial_primitive = [setup, x0, x1, bmk_gamma_shock] HD (double x) -> prim_t
         {
             switch (setup)
             {
@@ -655,7 +658,7 @@ public:
                     auto shock_radius = 1.0;
                     auto eta = x / shock_radius;
                     if (eta < 1.0) {
-                        auto Gamma = 10.0;
+                        auto Gamma = bmk_gamma_shock;
                         auto xi = Gamma * Gamma * (eta - 1.0);
                         auto f = 0.5 - 8.0 * xi;
                         auto g = 2.0 * sqrt(2.0) * pow((1.0 - 8.0 * xi), (-5.0 / 4.0));
