@@ -669,7 +669,7 @@ public:
             default: return {};
             }
         };
-        auto initial_conserved = [=] (double x) { return prim_to_cons(initial_primitive(x)); };
+        auto initial_conserved = [=] HD (double x) { return prim_to_cons(initial_primitive(x)); };
         state.time = 0.0;
         state.iter = 0.0;
         state.cons = cell_coordinates(config).map(initial_conserved).cache();
