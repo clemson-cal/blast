@@ -1,8 +1,8 @@
-*.cfg
 *.dSYM
 *.h5
 .DS_Store
 .venv
+/*.cfg
 bin
 build
 Makefile
