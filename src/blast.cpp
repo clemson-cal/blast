@@ -266,6 +266,7 @@ enum class Setup
     wind,
     bmk,
     thermal_bomb,
+    fast_shell,
 };
 static Setup setup_from_string(const std::string& name)
 {
@@ -275,6 +276,7 @@ static Setup setup_from_string(const std::string& name)
     if (name == "wind") return Setup::wind;
     if (name == "bmk") return Setup::bmk;
     if (name == "thermal_bomb") return Setup::thermal_bomb;
+    if (name == "fast_shell") return Setup::fast_shell;
     throw std::runtime_error("unknown setup " + name);
 }
 
@@ -719,6 +721,18 @@ public:
                     return vec(rho_in, 0.0, p_in);
                 } else {
                     return vec(rho_out, 0.0, p_out);
+                }
+            }
+            case Setup::fast_shell: {
+                auto r_in = 0.1 * (x1 - x0);
+                auto rho_in = x;
+                auto rho_out = 1.0;
+                if (x < r_in) {
+                    auto bg = x * 30.0;
+                    auto p = rho_in * 1.0E-1;
+                    return vec(rho_in, bg, p);
+                } else {
+                    return vec(rho_out, 0.0, rho_out * 1.0e-6);
                 }
             }
             default: return {};
