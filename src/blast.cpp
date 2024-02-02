@@ -384,6 +384,38 @@ static void update_prim(const State& state, prim_array_t& p)
 
 
 
+template<class F>
+auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
+{
+    auto bcl = config.bc[0];
+    auto bcr = config.bc[1];
+    auto il = index_space(ivec(0), uvec(ng));
+    auto ir = index_space(ivec(u.size() - ng), uvec(ng));
+    auto ul = cons_t{};
+    auto ur = cons_t{};
+
+    if (bcl == 'f') {
+        ul = u[ng];
+    } else {
+        ul = u[ng - 1];
+    }
+    if (bcr == 'f') {
+        ur = u[u.size() - ng];
+    } else {
+        ur = u[u.size() - ng - 1];
+    }
+    if (bcl == 'r') {
+        ul[1] *= -1.0;
+    }
+    if (bcr == 'r') {
+        ur[1] *= -1.0;
+    }
+    return u.at(il).set(ul).at(ir).set(ur);
+}
+
+
+
+
 template<class CoordinateSystem>
 static State next_pcm(const State& state, const CoordinateSystem& coords, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
@@ -425,7 +457,7 @@ static State next_pcm(const State& state, const CoordinateSystem& coords, const 
     return State{
         state.time + dt,
         state.iter + 1.0,
-        (u.at(interior_cells) + du).cache(),
+        set_bc(u.at(interior_cells) + du, config, 1).cache(),
     };
     return state;
 }
@@ -490,7 +522,7 @@ static State next_plm(const State& state, const Geometry& geom, const Config& co
     return State{
         state.time + dt,
         state.iter + 1.0,
-        (u.at(interior_cells) + du).cache(),
+        set_bc(u.at(interior_cells) + du, config, 2).cache(),
     };
 }
 
