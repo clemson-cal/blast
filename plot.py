@@ -9,9 +9,9 @@ def main(filenames: list[Path]):
     for filename in filenames:
         h5f = File(filename)
         x = h5f["cell_coordinate"][...]
-        d = h5f["gamma_beta"][...]
+        d = h5f["comoving_mass_density"][...]
         ax1.plot(x, d, label=filename, color='k')
-        ax1.set_xlim(0.98, 1.2)
+        ax1.set_xlim(0.0, 1.0)
         ax1.set_ylim(0.0)
         # ax1.set_ylim(0.0, 1.0)
     # ax1.legend()

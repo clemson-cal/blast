@@ -265,6 +265,7 @@ enum class Setup
     mm96p1,
     wind,
     bmk,
+    thermal_bomb,
 };
 static Setup setup_from_string(const std::string& name)
 {
@@ -273,6 +274,7 @@ static Setup setup_from_string(const std::string& name)
     if (name == "mm96p1") return Setup::mm96p1;
     if (name == "wind") return Setup::wind;
     if (name == "bmk") return Setup::bmk;
+    if (name == "thermal_bomb") return Setup::thermal_bomb;
     throw std::runtime_error("unknown setup " + name);
 }
 
@@ -706,6 +708,19 @@ public:
                         return vec(1.0, 0.0, 1e-8);
                     }
                 }
+            case Setup::thermal_bomb: {
+                auto energy = 1.0;
+                auto r_in = 0.1 * (x1 - x0);
+                auto rho_in = 1.0;
+                auto rho_out = 1.0;
+                auto p_in = energy / (4.0 / 3.0 * 3.14159 * pow(r_in, 3.0)) * (gamma - 1.0);
+                auto p_out = rho_out * 1.0e-6;
+                if (x < r_in) {
+                    return vec(rho_in, 0.0, p_in);
+                } else {
+                    return vec(rho_out, 0.0, p_out);
+                }
+            }
             default: return {};
             }
         };
