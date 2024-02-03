@@ -1,4 +1,5 @@
 import re, pathlib, platform
+from argparse import ArgumentParser
 from pprint import pformat
 from tempfile import TemporaryDirectory
 from glob import glob
@@ -29,8 +30,7 @@ def invoke(fig, cfg, outdir):
     d = h5f["comoving_mass_density"][...]
     u = h5f["gamma_beta"][...]
     p = h5f["gas_pressure"][...]
-
-    sha = check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
+    sha = check_output(["git", "rev-parse", "--short", "HEAD"]).decode("ascii").strip()
     config = {k: h5f["__config__"][k][...] for k in h5f["__config__"]}
     description = f"""
         Code version: {sha}
@@ -47,13 +47,12 @@ def invoke(fig, cfg, outdir):
         bc = {chr(config['bc'][0])}{chr(config['bc'][1])}
         dx = {config['dx']}
     """
-
     ax1.plot(x, d)
     ax1.set_xlabel(r"$x$")
     ax1.set_ylabel(r"Comoving mass density $\rho$")
     ax2.plot(x, u)
     ax2.set_xlabel(r"$x$")
-    ax2.set_ylabel(r"Gamma-beta $u$")
+    ax2.set_ylabel(r"$\Gamma \beta$")
     ax3.plot(x, p)
     ax3.set_xlabel(r"$x$")
     ax3.set_ylabel(r"Gas pressure $p$")
@@ -66,18 +65,21 @@ def invoke(fig, cfg, outdir):
 
 
 def main():
-    rc(group="text", usetex=True)
+    parser = ArgumentParser()
+    parser.add_argument("--no-tex", action="store_true")
+    parser.add_argument("setups", nargs="*", default=glob("setups/*"))
+    args = parser.parse_args()
+    rc(group="text", usetex=not args.no_tex)
     with PdfPages("report.pdf") as pdf:
-        for cfg in glob("setups/*"):
+        for cfg in args.setups:
             fig = plt.figure(figsize=[8, 6])
             with TemporaryDirectory() as outdir:
                 print(cfg)
                 invoke(fig, cfg, outdir)
             fig.suptitle(f"Setup: {pathlib.Path(cfg).stem}")
-            fig.subplots_adjust(left=0.06, right=0.98, bottom=0.08)
+            fig.subplots_adjust(left=0.1, right=0.98, bottom=0.08)
             pdf.savefig(fig)
             fig.clf()
-
         d = pdf.infodict()
         d["Title"] = "Blast Code Diagnostics Report"
         d["Author"] = "Jonathan Zrake"
