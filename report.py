@@ -62,6 +62,7 @@ def invoke(fig, cfg, outdir):
     ax5.axes.xaxis.set_visible(False)
     ax5.axes.yaxis.set_visible(False)
     ax5.text(0.05, 0.0, description)
+    ax1.set_title(f"Time = {h5f['__time__'][...]:.3f}")
 
 
 def main():
