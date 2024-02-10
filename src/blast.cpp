@@ -231,23 +231,23 @@ HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1)
 
 
 
-template<class FacePosition, class FaceArea, class CellVolume, class GeometricSourceTerms>
+template<class X, class A, class V, class S>
 struct grid_geometry_t
 {
-    array_t<1, FacePosition> face_position;
-    array_t<1, FaceArea> face_area;
-    array_t<1, CellVolume> cell_volume;
-    GeometricSourceTerms geometric_source_terms;
+    array_t<1, X> face_position;
+    array_t<1, A> face_area;
+    array_t<1, V> cell_volume;
+    S geometric_source_terms;
 };
 
-template<class FacePosition, class FaceArea, class CellVolume, class GeometricSourceTerms>
+template<class X, class A, class V, class S>
 auto grid_geometry(
-    array_t<1, FacePosition> face_position,
-    array_t<1, FaceArea> face_area,
-    array_t<1, CellVolume> cell_volume,
-    GeometricSourceTerms geometric_source_terms)
+    array_t<1, X> face_position,
+    array_t<1, A> face_area,
+    array_t<1, V> cell_volume,
+    S geometric_source_terms)
 {
-    return grid_geometry_t<FacePosition, FaceArea, CellVolume, GeometricSourceTerms>{
+    return grid_geometry_t<X, A, V, S>{
         face_position,
         face_area,
         cell_volume,
@@ -420,14 +420,14 @@ auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
 
 
 
-template<class CoordinateSystem>
-static State next_pcm(const State& state, const CoordinateSystem& coords, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+template<class G>
+static State next_pcm(const State& state, const G& geom, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
-    auto rf = coords.face_position;
-    auto da = coords.face_area;
-    auto dv = coords.cell_volume;
-    auto st = coords.geometric_source_terms;
+    auto rf = geom.face_position;
+    auto da = geom.face_area;
+    auto dv = geom.cell_volume;
+    auto st = geom.geometric_source_terms;
     auto ic = range(dv.space());
     auto iv = range(rf.space());
     auto interior_cells = ic.space().contract(2);
@@ -469,8 +469,8 @@ static State next_pcm(const State& state, const CoordinateSystem& coords, const 
 
 
 
-template<class Geometry>
-static State next_plm(const State& state, const Geometry& geom, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+template<class G>
+static State next_plm(const State& state, const G& geom, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
     auto rf = geom.face_position;
