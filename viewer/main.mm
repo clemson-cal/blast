@@ -1001,8 +1001,10 @@ public:
     Command draw(const Status& status)
     {
         Command command = Action::nothing;
-        static bool show_config_window = false;
+        static bool show_config = false;
+        static bool show_style = false;
         static bool auto_step = false;
+        static bool draw_markers = true;
 
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -1014,7 +1016,7 @@ public:
         }
         ImGui::SameLine();
         if (ImGui::Button("Config")) {
-            show_config_window = true;
+            show_config = true;
         }
         ImGui::SameLine();
         if (ImGui::Button("Load")) {
@@ -1038,6 +1040,10 @@ public:
         }
         ImGui::SameLine();
         ImGui::Text("%s", status.message.data);
+        ImGui::SameLine();
+        if (ImGui::Button("Style")) {
+            show_style = true;
+        }
 
         if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
         {
@@ -1045,8 +1051,10 @@ public:
 
             for (const auto& [name, y] : status.products) {
                 if (name != "cell_coordinate") {
-                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
-                    ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
+                    if (draw_markers) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
+                        ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
+                    }
                     ImPlot::PlotLine(name.data(), x.data(), y.data(), x.size());
                 }
             }
@@ -1068,9 +1076,16 @@ public:
         // const char* method_options[] = {"pcm", "plm"};
         // static int method_index = 0;
 
-        if (show_config_window) {
+        if (show_style) {
             ImGui::SetNextWindowSize(ImVec2(300.0, 0.0));
-            ImGui::Begin("Config", &show_config_window, ImGuiWindowFlags_NoResize);
+            ImGui::Begin("Style", &show_style, ImGuiWindowFlags_NoResize);
+            ImGui::Checkbox("Markers", &draw_markers);
+            ImGui::End();
+        }
+        if (show_config) {
+            ImGui::SetNextWindowSize(ImVec2(300.0, 0.0));
+            ImGui::Begin("Config", &show_config, ImGuiWindowFlags_NoResize);
+
             // if (ImGui::SliderFloat("dx", &config.dx, 1e-1f, 1e-5f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
             //     app.running = false;
             //     action = Action::restart;
@@ -1086,6 +1101,7 @@ public:
             // }
             ImGui::End();
         }
+
         return command;
     }
     void run(int argc, const char *argv[])
