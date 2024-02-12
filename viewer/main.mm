@@ -20,20 +20,51 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ================================================================================
+
+
+Approach to the UI
+------------------
+
+There is a main thread, running the UI, and a worker thread, running the simulation.
+
+The UI thread passes commands to the simulation thread. The commands include:
+
+- restart the simulation
+- start the simulation
+- step the simulation
+- pause the simulation
+- new Config instances
+
+Some changes to the configuraiton (e.g. setup, BC, grid spacing) imply that a
+new simulation must be started. Others (e.g. method) can be applied to a
+running simulation.
+
+The simulation passes back to the UI a sequence of messages. The messages
+include an iteration report, including the Mzps measurement, the simulation
+state, and the diagnostics.
+
 */
 
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 
 #include <cmath>
+#include <cstdio>
 #include <functional>
-#include <stdio.h>
+#include <memory>
+#include <mutex>
+#include <tuple>
+#include <queue>
+#include <thread>
+#include <variant>
 #include <SDL.h>
 #include "imgui.h"
 #include "imgui_impl_metal.h"
 #include "imgui_impl_sdl2.h"
 #include "implot.h"
 #include "imfilebrowser.h"
+
+#define VAPOR_USE_SHARED_PTR_ALLOCATOR
 #include "vapor/vapor.hpp"
 
 
@@ -45,9 +76,9 @@ SOFTWARE.
 using namespace vapor;
 using cons_t = vec_t<double, 3>;
 using prim_t = vec_t<double, 3>;
-using cons_array_t = memory_backed_array_t<1, cons_t, ref_counted_ptr_t>;
-using prim_array_t = memory_backed_array_t<1, prim_t, ref_counted_ptr_t>;
-using Product = memory_backed_array_t<1, double, ref_counted_ptr_t>;
+using cons_array_t = memory_backed_array_t<1, cons_t, std::shared_ptr>;
+using prim_array_t = memory_backed_array_t<1, prim_t, std::shared_ptr>;
+using Product = memory_backed_array_t<1, double, std::shared_ptr>;
 
 #define gamma (4.0 / 3.0)
 #define min2(a, b) ((a) < (b) ? (a) : (b))
@@ -866,402 +897,370 @@ public:
 
 
 
+
 enum struct Action
 {
     nothing,
-    restart,
+    new_state,
+    step,
+    quit,
+};
+struct Status {
+    Config config;
+    State state;
+    vec_t<char, 256> message;
+    std::map<std::string, Product> products;
+};
+using Command = std::variant<Action, Config>;
+
+
+
+
+struct CommandResponder
+{
+    bool operator()(Action action)
+    {
+        switch (action) {
+        case Action::nothing: return true;
+        case Action::new_state: sim.initial_state(state); return true;
+        case Action::step:
+            secs = time_call(sim.updates_per_batch(), [&] { sim.update(state); });
+            return true;
+        case Action::quit: return false;
+        }
+    }
+    bool operator()(Config config)
+    {
+        if (sim.get_config().dx != config.dx ||
+            sim.get_config().domain != config.domain ||
+            sim.get_config().setup != config.setup) {
+            sim.get_config() = config;
+            sim.initial_state(state);
+        }
+        else {
+            sim.get_config() = config;            
+        }
+        return true;
+    }
+    Blast& sim;
+    State& state;
+    double& secs;
 };
 
-struct AppState
+auto status(const Blast& sim, State state, double secs)
 {
-    bool running = false;
-};
-
-static Action draw(const Blast& sim, const State& state, double secs_per_update, AppState& app, Config& config, ImGui::FileBrowser& browser)
-{
-    static bool show_config_window = false;
-
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-    ImGui::Begin("Window", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus);
-    auto action = Action::nothing;
-
-    if (ImGui::Button("Config")) {
-        show_config_window = true;
+    auto status = Status();
+    status.config = sim.get_config();
+    status.state = state;
+    status.message = sim.status_message(state, secs);
+    int col = 0;
+    while (auto name = sim.get_product_name(col)) {
+        status.products[name] = sim.compute_product(state, col);
+        ++col;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Load")) {
-        browser.Open();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Restart")) {
-        action = Action::restart;
-    }
-    ImGui::SameLine();
-    if (app.running) {
-        if (ImGui::Button("Stop")) {
-            app.running = false;
-        }
-    }
-    else {
-        if (ImGui::Button("Start")) {
-            app.running = true;
-        }
-    }
-    ImGui::SameLine();
-    ImGui::Text("%s", sim.status_message(state, secs_per_update).data);
-
-    if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
-    {
-        auto x = sim.compute_product(state, 3);
-        for (int n = 0; n < 3; ++n)
-        {
-            auto y = sim.compute_product(state, n);
-            ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
-            ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
-            ImPlot::PlotLine(sim.get_product_name(n), x.data(), y.data(), x.size());
-        }
-        ImPlot::EndPlot();
-    }
-    ImGui::End();
-
-    browser.Display();
-
-    if (browser.HasSelected())
-    {
-        print(browser.GetSelected().string());
-        print("\n");
-        browser.ClearSelected();
-    }
-
-    const char* rk_options[] = {"None", "RK1", "RK2", "RK3"};
-    const char* method_options[] = {"pcm", "plm"};
-    static int method_index = 0;
-
-    if (show_config_window) {
-        ImGui::SetNextWindowSize(ImVec2(300.0, 0.0));
-        ImGui::Begin("Config", &show_config_window, ImGuiWindowFlags_NoResize);
-        if (ImGui::SliderFloat("dx", &config.dx, 1e-1f, 1e-5f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
-            app.running = false;
-            action = Action::restart;
-        }
-        if (ImGui::DragFloatRange2("domain", &config.domain[0], &config.domain[1], 0.05f)) {
-            app.running = false;
-            action = Action::restart;        
-        }
-        if (ImGui::Combo("rk", &config.rk, rk_options, IM_ARRAYSIZE(rk_options))) {
-        }
-        if (ImGui::Combo("method", &method_index, method_options, IM_ARRAYSIZE(method_options))) {
-            config.method = method_options[method_index];
-        }
-        ImGui::End();
-    }
-
-    return action;
+    return status;
 }
+
+auto responder(std::function<Command(Status)> next)
+{
+    return [next] {
+        auto sim = Blast();
+        auto state = State();
+        auto secs = 1.0;
+        auto responder = CommandResponder{sim, state, secs};
+
+        sim.initial_state(state);
+
+        while (std::visit(responder, next(status(sim, state, secs))))
+        {
+        }
+    };
+}
+
+
+
+
+class App
+{
+public:
+    App()
+    {
+        if (startup()) {
+            printf("startup error\n");
+            exit(1);
+        }
+        browser = ImGui::FileBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
+        browser.SetTitle("File Browser");
+        browser.SetTypeFilters({".cfg"});
+    }
+    ~App()
+    {
+        shutdown();
+    }
+    Command draw(const Status& status)
+    {
+        Command command = Action::nothing;
+        static bool show_config_window = false;
+        static bool auto_step = false;
+
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("Window", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+        if (ImGui::Button("Quit")) {
+            auto_step = false;
+            command = Action::quit;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Config")) {
+            show_config_window = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) {
+            browser.Open();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(auto_step);
+        if (ImGui::Button("Step")) {
+            command = Action::step;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Checkbox("Auto", &auto_step);
+        if (auto_step) {
+            command = Action::step;
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s", status.message.data);
+
+        if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
+        {
+            auto x = status.products.at("cell_coordinate");
+
+            for (const auto& [name, y] : status.products) {
+                if (name != "cell_coordinate") {
+                    ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
+                    ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
+                    ImPlot::PlotLine(name.data(), x.data(), y.data(), x.size());
+                }
+            }
+            ImPlot::EndPlot();
+        }
+
+        ImGui::End();
+        browser.Display();
+
+        if (browser.HasSelected())
+        {
+            auto config = status.config;
+            set_from_key_vals(config, readfile(browser.GetSelected().string().data()).data());
+            browser.ClearSelected();
+            command = config;
+        }
+
+        // const char* rk_options[] = {"None", "RK1", "RK2", "RK3"};
+        // const char* method_options[] = {"pcm", "plm"};
+        // static int method_index = 0;
+
+        if (show_config_window) {
+            ImGui::SetNextWindowSize(ImVec2(300.0, 0.0));
+            ImGui::Begin("Config", &show_config_window, ImGuiWindowFlags_NoResize);
+            // if (ImGui::SliderFloat("dx", &config.dx, 1e-1f, 1e-5f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
+            //     app.running = false;
+            //     action = Action::restart;
+            // }
+            // if (ImGui::DragFloatRange2("domain", &config.domain[0], &config.domain[1], 0.05f)) {
+            //     app.running = false;
+            //     action = Action::restart;
+            // }
+            // if (ImGui::Combo("rk", &config.rk, rk_options, IM_ARRAYSIZE(rk_options))) {
+            // }
+            // if (ImGui::Combo("method", &method_index, method_options, IM_ARRAYSIZE(method_options))) {
+            //     config.method = method_options[method_index];
+            // }
+            ImGui::End();
+        }
+        return command;
+    }
+    void run(int argc, const char *argv[])
+    {
+        auto m = std::mutex();
+        auto queue = std::queue<Command>();
+        auto last_status = Status();
+        auto sim_thread = std::thread(responder([&m, &queue, &last_status] (Status status) -> Command
+        {
+            {
+                auto lock = std::lock_guard<std::mutex>(m);
+                last_status = status;
+            }
+            while (true) {
+                auto lock = std::lock_guard<std::mutex>(m);
+                if (! queue.empty()) {
+                    auto command = queue.front();
+                    queue.pop();
+                    return command;
+                }
+            }
+            assert(false);
+        }));
+        bool done = false;
+
+        {
+            auto config = Config();
+            for (int n = 1; n < argc; ++n)
+            {
+                if (argv[n][0] == '-') {
+                    // do nothing
+                } else if (strstr(argv[n], ".cfg")) {
+                    set_from_key_vals(config, readfile(argv[n]).data());
+                } else {
+                    set_from_key_vals(config, argv[n]);
+                }
+            }
+            auto lock = std::lock_guard<std::mutex>(m);
+            queue.push(config);
+        }
+
+        while (! done)
+        {
+            SDL_Event event;
+
+            while (SDL_PollEvent(&event))
+            {
+                ImGui_ImplSDL2_ProcessEvent(&event);
+                if ((event.type == SDL_QUIT) ||
+                    (event.type == SDL_WINDOWEVENT &&
+                     event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                     event.window.windowID == SDL_GetWindowID(window)))
+                {
+                    auto guard = std::lock_guard<std::mutex>(m);
+                    queue.push(Action::quit);
+                    done = true;
+                }
+            }
+
+            @autoreleasepool {
+                auto guard = std::lock_guard<std::mutex>(m);
+                auto d = new_frame();
+                auto command = draw(last_status);
+                queue.push(command);
+                if (std::holds_alternative<Action>(command) && std::get<Action>(command) == Action::quit)
+                {
+                    done = true;
+                }
+                // ImGui::ShowDemoWindow();
+                // ImPlot::ShowDemoWindow();
+                end_frame(d);
+            }
+        }
+        sim_thread.join();
+    }
+private:
+    std::tuple<id<CAMetalDrawable>, id<MTLCommandBuffer>, id <MTLRenderCommandEncoder>> new_frame()
+    {
+        float clear_color[4] = {0.f, 0.f, 0.f, 1.f};
+        int width, height;
+        SDL_GetRendererOutputSize(renderer, &width, &height);
+        layer.drawableSize = CGSizeMake(width, height);
+        id<CAMetalDrawable> drawable = [layer nextDrawable];
+        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(clear_color[0] * clear_color[3], clear_color[1] * clear_color[3], clear_color[2] * clear_color[3], clear_color[3]);
+        renderPassDescriptor.colorAttachments[0].texture = drawable.texture;
+        renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+        renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id <MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+        [renderEncoder pushDebugGroup:@"ImGui demo"];
+        ImGui_ImplMetal_NewFrame(renderPassDescriptor);
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+        return std::make_tuple(drawable, commandBuffer, renderEncoder);
+    }
+    void end_frame(std::tuple<id<CAMetalDrawable>, id<MTLCommandBuffer>, id <MTLRenderCommandEncoder>> t)
+    {
+        auto [drawable, commandBuffer, renderEncoder] = t;
+        ImGui::Render();
+        ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, renderEncoder);
+        [renderEncoder popDebugGroup];
+        [renderEncoder endEncoding];
+        [commandBuffer presentDrawable:drawable];
+        [commandBuffer commit];
+    }
+    int startup()
+    {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImPlot::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        ImGui::StyleColorsDark();
+        io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/DroidSans.ttf", 16.0f);
+        io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Roboto-Medium.ttf", 16.0f);
+        io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Cousine-Regular.ttf", 15.0f);
+
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
+        {
+            printf("Error: %s\n", SDL_GetError());
+            return -1;
+        }
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");
+        SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+
+        window = SDL_CreateWindow("Vapor Viewer",
+            SDL_WINDOWPOS_CENTERED,
+            SDL_WINDOWPOS_CENTERED,
+            1280, 720,
+            SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+
+        if (window == nullptr)
+        {
+            printf("Error creating window: %s\n", SDL_GetError());
+            return -2;
+        }
+
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        if (renderer == nullptr)
+        {
+            printf("Error creating renderer: %s\n", SDL_GetError());
+            return -3;
+        }
+
+        layer = (__bridge CAMetalLayer*)SDL_RenderGetMetalLayer(renderer);
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        ImGui_ImplMetal_Init(layer.device);
+        ImGui_ImplSDL2_InitForMetal(window);
+
+        commandQueue = [layer.device newCommandQueue];
+        renderPassDescriptor = [MTLRenderPassDescriptor new];
+
+        return 0;
+    }
+    void shutdown()
+    {
+        ImGui_ImplMetal_Shutdown();
+        ImGui_ImplSDL2_Shutdown();
+        ImPlot::DestroyContext();
+        ImGui::DestroyContext();
+
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+    }
+
+    SDL_Window *window;
+    SDL_Renderer* renderer;
+    CAMetalLayer *layer;
+    id<MTLCommandQueue> commandQueue;
+    MTLRenderPassDescriptor* renderPassDescriptor;
+    ImGui::FileBrowser browser;
+};
 
 
 
 
 int main(int argc, const char **argv)
 {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImPlot::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    ImGui::StyleColorsDark();
-    io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/DroidSans.ttf", 16.0f);
-    io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Roboto-Medium.ttf", 16.0f);
-    io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Cousine-Regular.ttf", 15.0f);
-
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
-    {
-        printf("Error: %s\n", SDL_GetError());
-        return -1;
-    }
-
-    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");
-    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
-    SDL_Window *window = SDL_CreateWindow("Vapor Viewer",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
-        1280, 720,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (window == nullptr)
-    {
-        printf("Error creating window: %s\n", SDL_GetError());
-        return -2;
-    }
-
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (renderer == nullptr)
-    {
-        printf("Error creating renderer: %s\n", SDL_GetError());
-        return -3;
-    }
-
-    CAMetalLayer *layer = (__bridge CAMetalLayer*)SDL_RenderGetMetalLayer(renderer);
-    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-    ImGui_ImplMetal_Init(layer.device);
-    ImGui_ImplSDL2_InitForMetal(window);
-
-    id<MTLCommandQueue> commandQueue = [layer.device newCommandQueue];
-    MTLRenderPassDescriptor* renderPassDescriptor = [MTLRenderPassDescriptor new];
-
-
-
-
-    /*========================================================================*/
-    auto sim = Blast();
-    auto state = State();
-    auto tasks = task_states_t();
-    auto timeseries_data = std::map<std::string, std::vector<double>>();
-    // auto checkpoint = [&] (const auto& state)
-    // {
-    //     if (tasks.checkpoint.should_be_performed(sim.get_time(state)))
-    //     {
-    //         auto outdir = std::filesystem::path(sim.output_directory());
-    //         auto fname = outdir / vapor::format("chkpt.%04d.h5", tasks.checkpoint.number).data;
-    //         auto h5f = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-    //         vapor::hdf5_write(h5f, "state", state);
-    //         vapor::hdf5_write(h5f, "config", sim.get_config());
-    //         vapor::hdf5_write(h5f, "timeseries", timeseries_data);
-    //         vapor::hdf5_write(h5f, "tasks", tasks);
-    //         H5Fclose(h5f);
-    //         printf("write %s\n", fname.c_str());
-    //     }
-    // };
-
-    // auto timeseries = [&] (const auto& state)
-    // {
-    //     if (tasks.timeseries.should_be_performed(sim.get_time(state)))
-    //     {
-    //         for (auto col : sim.get_timeseries_cols())
-    //         {
-    //             auto name = sim.get_timeseries_name(col);
-    //             auto sample = sim.compute_timeseries_sample(state, col);
-    //             timeseries_data[name].push_back(sample);
-    //         }
-    //         printf("record timeseries entry\n");
-    //     }
-    // };
-
-    // auto product = [&] (const auto& state)
-    // {
-    //     if (tasks.product.should_be_performed(sim.get_time(state)))
-    //     {
-    //         auto outdir = std::filesystem::path(sim.output_directory());
-    //         auto fname = outdir / vapor::format("prods.%04d.h5", tasks.product.number).data;
-    //         auto h5f = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-
-    //         for (auto col : sim.get_product_cols())
-    //         {
-    //             auto name = sim.get_product_name(col);
-    //             auto field = sim.compute_product(state, col);
-    //             vapor::hdf5_write(h5f, name, field);
-    //         }
-    //         vapor::hdf5_write(h5f, "__config__", sim.get_config());
-    //         vapor::hdf5_write(h5f, "__time__", sim.get_time(state));
-    //         vapor::hdf5_write(h5f, "__iter__", sim.get_iteration(state));
-    //         H5Fclose(h5f);
-    //         printf("write %s\n", fname.c_str());
-    //     }
-    // };
-
-    for (int n = 1; n < argc; ++n)
-    {
-        if (strcmp(argv[n], "-h") == 0 || strcmp(argv[n], "--help") == 0)
-        {
-            if (auto name = sim.name())
-                printf("usage: %s [restart.h5] [key=val...]\n", name);
-            if (auto author = sim.author())
-                printf("author: %s\n", author);
-            if (auto description = sim.description())
-                printf("\n%s\n", description);
-
-            vapor::print("\n");
-            vapor::print("-h --help            show this help message\n");
-
-            if (sim.use_persistent_session()) {
-                vapor::print("-n --new-session     clear the session.cfg file\n");
-            }
-
-            for (uint col = 0; ; ++col)
-            {
-                if (auto name = sim.get_product_name(col)) {
-                    if (col == 0) {
-                        vapor::print("\nsimulation products available ->\n");
-                    }
-                    vapor::print(format("%d: %s\n", col, sim.get_product_name(col)));
-                } else {
-                    break;
-                }
-            }
-
-            for (uint col = 0; ; ++col)
-            {
-                if (auto name = sim.get_timeseries_name(col)) {
-                    if (col == 0) {
-                        vapor::print("\ntime series data available ->\n");
-                    }
-                    vapor::print(format("%d: %s\n", col, sim.get_timeseries_name(col)));
-                }
-                else {
-                    break;
-                }
-            }
-            vapor::print("\nuser configuration ->\n");
-            vapor::print(sim.get_config());
-            return 0;
-        }
-        else if (sim.use_persistent_session() && (strcmp(argv[n], "-n") == 0 || strcmp(argv[n], "--new-session") == 0))
-        {
-            vapor::print("new session, use default configuration\n");
-            std::filesystem::remove("session.cfg");
-        }
-        else if (argv[n][0] == '-') {
-            throw std::runtime_error(vapor::format("unrecognized option %s", argv[n]));
-        }
-    }
-    if (argc > 1 && strstr(argv[1], ".h5"))
-    {
-        auto h5f = H5Fopen(argv[1], H5P_DEFAULT, H5P_DEFAULT);
-        vapor::hdf5_read(h5f, "state", state);
-        vapor::hdf5_read(h5f, "config", sim.get_config());
-        vapor::hdf5_read(h5f, "timeseries", timeseries_data);
-        vapor::hdf5_read(h5f, "tasks", tasks);
-        vapor::set_from_key_vals(sim.get_config(), argc - 1, argv + 1);
-        H5Fclose(h5f);
-        printf("read %s\n", argv[1]);
-    }
-    else
-    {
-        if (sim.use_persistent_session() && std::filesystem::exists("session.cfg")) {
-            vapor::print("load configuration from session.cfg\n");
-            vapor::set_from_key_vals(sim.get_config(), readfile("session.cfg").data());
-        }
-
-        for (int n = 1; n < argc; ++n)
-        {
-            if (argv[n][0] == '-') {
-                // do nothing
-            } else if (strstr(argv[n], ".cfg")) {
-                set_from_key_vals(sim.get_config(), readfile(argv[n]).data());
-            } else {
-                set_from_key_vals(sim.get_config(), argv[n]);
-            }
-        }
-        vapor::print_to_file(sim.get_config(), "session.cfg");
-        sim.initial_state(state);
-    }
-
-    tasks.checkpoint.interval = sim.checkpoint_interval();
-    tasks.timeseries.interval = sim.timeseries_interval();
-    tasks.product.interval = sim.product_interval();
-
-    vapor::print("\n");
-    vapor::print(sim.get_config());
-    vapor::print("\n");
-
-    if (! sim.get_product_cols().empty())
-    {
-        for (auto col : sim.get_product_cols())
-        {
-            if (auto name = sim.get_product_name(col))
-                print(format("product %d: %s\n", col, name));
-            else
-                throw std::runtime_error(format("product number %d is not provided", col));
-        }
-    }
-
-    if (! sim.get_timeseries_cols().empty())
-    {
-        for (auto col : sim.get_timeseries_cols())
-        {
-            if (auto name = sim.get_timeseries_name(col))
-                print(format("timeseries %d: %s\n", col, name));
-            else
-                throw std::runtime_error(format("timeseries number %d is not provided", col));
-        }
-    }
-
-    if (auto outdir = sim.output_directory()) {
-        printf("write output to %s\n", outdir);
-        std::filesystem::create_directories(outdir);
-    }
-
-    auto secs = 1.0;
-    bool done = false;
-    auto app = AppState();
-    auto browser = ImGui::FileBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
-
-    browser.SetTitle("File Browser");
-    browser.SetTypeFilters({".cfg"});
-
-    while (! done)
-    {
-        if (app.running) {
-            secs = time_call(sim.updates_per_batch(), [&sim, &state] { sim.update(state); });
-        }
-        SDL_Event event;
-
-        while (SDL_PollEvent(&event))
-        {
-            ImGui_ImplSDL2_ProcessEvent(&event);
-            if (event.type == SDL_QUIT)
-                done = true;
-            if (event.type == SDL_WINDOWEVENT &&
-                event.window.event == SDL_WINDOWEVENT_CLOSE &&
-                event.window.windowID == SDL_GetWindowID(window))
-                done = true;
-        }
-
-        @autoreleasepool {
-            float clear_color[4] = {0.f, 0.f, 0.f, 1.f};
-            int width, height;
-            SDL_GetRendererOutputSize(renderer, &width, &height);
-            layer.drawableSize = CGSizeMake(width, height);
-            id<CAMetalDrawable> drawable = [layer nextDrawable];
-            id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-            renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(clear_color[0] * clear_color[3], clear_color[1] * clear_color[3], clear_color[2] * clear_color[3], clear_color[3]);
-            renderPassDescriptor.colorAttachments[0].texture = drawable.texture;
-            renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-            renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-            id <MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-            [renderEncoder pushDebugGroup:@"ImGui demo"];
-            ImGui_ImplMetal_NewFrame(renderPassDescriptor);
-            ImGui_ImplSDL2_NewFrame();
-            ImGui::NewFrame();
-
-            // ImGui::ShowDemoWindow();
-            // ImPlot::ShowDemoWindow();
-
-            switch (draw(sim, state, secs, app, sim.get_config(), browser)) {
-            case Action::nothing: break;
-            case Action::restart:
-                sim.initial_state(state);
-                break;
-            }
-
-            ImGui::Render();
-            ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, renderEncoder);
-            [renderEncoder popDebugGroup];
-            [renderEncoder endEncoding];
-            [commandBuffer presentDrawable:drawable];
-            [commandBuffer commit];
-        }
-    }
-
-    ImGui_ImplMetal_Shutdown();
-    ImGui_ImplSDL2_Shutdown();
-    ImPlot::DestroyContext();
-    ImGui::DestroyContext();
-
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-
+    auto app = App();
+    app.run(argc, argv);
     return 0;
 }

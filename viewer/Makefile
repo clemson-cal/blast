@@ -32,7 +32,7 @@ LIBS += -lhdf5
 CXXFLAGS = -std=c++17 -I/usr/local/include
 CXXFLAGS += `sdl2-config --cflags`
 CXXFLAGS += -Wall -Wformat
-CXXFLAGS += -O0
+CXXFLAGS += -O3
 CXXFLAGS += -I$(IMGUI_DIR)
 CXXFLAGS += -I$(IMGUI_DIR)/backends
 CXXFLAGS += -I$(IMPLOT_DIR)
