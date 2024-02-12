@@ -430,8 +430,8 @@ static State next_pcm(const State& state, const G& geom, const Config& config, p
     auto st = geom.geometric_source_terms;
     auto ic = range(dv.space());
     auto iv = range(rf.space());
-    auto interior_cells = ic.space().contract(2);
-    auto interior_faces = iv.space().contract(2);
+    auto interior_cells = ic.space().contract(1);
+    auto interior_faces = iv.space().contract(1);
 
     if (prim_dirty) {
         update_prim(state, p);
