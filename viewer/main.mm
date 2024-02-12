@@ -32,7 +32,6 @@ The UI thread passes commands to the simulation thread. The commands include:
 - restart the simulation
 - start the simulation
 - step the simulation
-- pause the simulation
 - new Config instances
 
 Some changes to the configuraiton (e.g. setup, BC, grid spacing) imply that a
@@ -1151,7 +1150,8 @@ public:
                 auto d = new_frame();
                 auto command = draw(last_status);
 
-                if (std::holds_alternative<Action>(command) &&
+                if (! queue.empty() &&
+                    std::holds_alternative<Action>(command) &&
                     std::holds_alternative<Action>(queue.back()) &&
                     std::get<Action>(command) == std::get<Action>(queue.back())) {
                     // skip this command, it's already in the queue
