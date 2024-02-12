@@ -5,5 +5,5 @@
 /*.cfg
 bin
 build
-Makefile
+/Makefile
 system.json
