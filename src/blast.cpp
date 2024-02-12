@@ -388,6 +388,7 @@ static void update_prim(const State& state, prim_array_t& p)
 
 
 
+
 template<class F>
 auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
 {
@@ -395,26 +396,35 @@ auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
     auto bcr = config.bc[1];
     auto il = index_space(ivec(0), uvec(ng));
     auto ir = index_space(ivec(u.size() - ng), uvec(ng));
-    auto ul = cons_t{};
-    auto ur = cons_t{};
 
-    if (bcl == 'f') {
-        ul = u[ng];
-    } else {
-        ul = u[ng - 1];
+    if (bcl == 'f' && bcr == 'f')
+    {
+        return u.cache();
     }
-    if (bcr == 'f') {
-        ur = u[u.size() - ng];
-    } else {
-        ur = u[u.size() - ng - 1];
+    else if (bcl == 'f' && (bcr == 'o' || bcr == 'r'))
+    {
+        auto ur = u[u.size() - ng - 1];
+        if (bcr == 'r') ur[1] *= -1.0;
+        return u.at(ir).set(ur).cache();
     }
-    if (bcl == 'r') {
-        ul[1] *= -1.0;
+    else if ((bcl == 'o' || bcl == 'r') && bcr == 'f')
+    {
+        auto ul = u[ng];
+        if (bcl == 'r') ul[1] *= -1.0;
+        return u.at(il).set(ul).cache();
     }
-    if (bcr == 'r') {
-        ur[1] *= -1.0;
+    else if ((bcl == 'o' || bcl == 'r') && (bcr == 'o' || bcr == 'r'))
+    {
+        auto ul = u[ng];
+        auto ur = u[u.size() - ng - 1];
+        if (bcl == 'r') ul[1] *= -1.0;
+        if (bcr == 'r') ur[1] *= -1.0;
+        return u.at(il).set(ul).at(ir).set(ur).cache();
     }
-    return u.at(il).set(ul).at(ir).set(ur);
+    else
+    {
+        return u.cache();        
+    }
 }
 
 
@@ -430,8 +440,8 @@ static State next_pcm(const State& state, const G& geom, const Config& config, p
     auto st = geom.geometric_source_terms;
     auto ic = range(dv.space());
     auto iv = range(rf.space());
-    auto interior_cells = ic.space().contract(2);
-    auto interior_faces = iv.space().contract(2);
+    auto interior_cells = ic.space().contract(1);
+    auto interior_faces = iv.space().contract(1);
 
     if (prim_dirty) {
         update_prim(state, p);
@@ -461,7 +471,7 @@ static State next_pcm(const State& state, const G& geom, const Config& config, p
     return State{
         state.time + dt,
         state.iter + 1.0,
-        set_bc(u.at(interior_cells) + du, config, 1).cache(),
+        set_bc(u.at(interior_cells) + du, config, 1),
     };
     return state;
 }
@@ -526,7 +536,7 @@ static State next_plm(const State& state, const G& geom, const Config& config, p
     return State{
         state.time + dt,
         state.iter + 1.0,
-        set_bc(u.at(interior_cells) + du, config, 2).cache(),
+        set_bc(u.at(interior_cells) + du, config, 2),
     };
 }
 
