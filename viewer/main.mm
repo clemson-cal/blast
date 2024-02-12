@@ -901,7 +901,7 @@ public:
 enum struct Action
 {
     nothing,
-    new_state,
+    restart,
     step,
     quit,
 };
@@ -922,7 +922,9 @@ struct CommandResponder
     {
         switch (action) {
         case Action::nothing: return true;
-        case Action::new_state: sim.initial_state(state); return true;
+        case Action::restart:
+            sim.initial_state(state);
+            return true;
         case Action::step:
             secs = time_call(sim.updates_per_batch(), [&] { sim.update(state); });
             return true;
@@ -1018,6 +1020,11 @@ public:
         ImGui::SameLine();
         if (ImGui::Button("Load")) {
             browser.Open();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Restart")) {
+            auto_step = false;
+            command = Action::restart;
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(auto_step);
@@ -1143,9 +1150,16 @@ public:
                 auto guard = std::lock_guard<std::mutex>(m);
                 auto d = new_frame();
                 auto command = draw(last_status);
-                queue.push(command);
-                if (std::holds_alternative<Action>(command) && std::get<Action>(command) == Action::quit)
-                {
+
+                if (std::holds_alternative<Action>(command) &&
+                    std::holds_alternative<Action>(queue.back()) &&
+                    std::get<Action>(command) == std::get<Action>(queue.back())) {
+                    // skip this command, it's already in the queue
+                } else {
+                    queue.push(command);
+                }
+
+                if (std::holds_alternative<Action>(command) && std::get<Action>(command) == Action::quit) {
                     done = true;
                 }
                 // ImGui::ShowDemoWindow();
