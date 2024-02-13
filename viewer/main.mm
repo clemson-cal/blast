@@ -641,8 +641,8 @@ static auto cell_coordinates(const Config& config)
 {
     auto x0 = config.domain[0];
     auto x1 = config.domain[1];
-    auto dx = config.dx;
-    auto ni = int((x1 - x0) / dx);
+    auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
+    auto dx = (x1 - x0) / ni;
     auto ic = range(ni);
     auto xc = (ic + 0.5) * dx + x0;
     return xc;
@@ -652,8 +652,8 @@ static auto face_coordinates(const Config& config)
 {
     auto x0 = config.domain[0];
     auto x1 = config.domain[1];
-    auto dx = config.dx;
-    auto ni = int((x1 - x0) / dx);
+    auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
+    auto dx = (x1 - x0) / ni;
     auto ic = range(ni + 1);
     auto xc = ic * dx + x0;
     return xc;
@@ -1076,7 +1076,8 @@ public:
         if (browser.HasSelected())
         {
             auto config = status.config;
-            set_from_key_vals(config, readfile(browser.GetSelected().string().data()).data());
+            auto fname = browser.GetSelected().string();
+            set_from_key_vals(config, readfile(fname.data()).data());
             browser.ClearSelected();
             command = config;
         }
@@ -1092,17 +1093,17 @@ public:
             ImGui::End();
         }
         if (show_config) {
+            auto config = status.config;
+
             ImGui::SetNextWindowSize(ImVec2(300.0, 0.0));
             ImGui::Begin("Config", &show_config, ImGuiWindowFlags_NoResize);
 
-            // if (ImGui::SliderFloat("dx", &config.dx, 1e-1f, 1e-5f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
-            //     app.running = false;
-            //     action = Action::restart;
-            // }
-            // if (ImGui::DragFloatRange2("domain", &config.domain[0], &config.domain[1], 0.05f)) {
-            //     app.running = false;
-            //     action = Action::restart;
-            // }
+            if (ImGui::SliderFloat("dx", &config.dx, 1e-1f, 1e-5f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
+                command = config;
+            }
+            if (ImGui::DragFloatRange2("domain", &config.domain[0], &config.domain[1], 0.05f)) {
+                command = config;
+            }
             // if (ImGui::Combo("rk", &config.rk, rk_options, IM_ARRAYSIZE(rk_options))) {
             // }
             // if (ImGui::Combo("method", &method_index, method_options, IM_ARRAYSIZE(method_options))) {
@@ -1299,7 +1300,6 @@ private:
         ImGui_ImplSDL2_Shutdown();
         ImPlot::DestroyContext();
         ImGui::DestroyContext();
-
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
