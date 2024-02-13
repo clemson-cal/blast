@@ -602,8 +602,8 @@ static auto cell_coordinates(const Config& config)
 {
     auto x0 = config.domain[0];
     auto x1 = config.domain[1];
-    auto dx = config.dx;
-    auto ni = int((x1 - x0) / dx);
+    auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
+    auto dx = (x1 - x0) / ni;
     auto ic = range(ni);
     auto xc = (ic + 0.5) * dx + x0;
     return xc;
@@ -613,8 +613,8 @@ static auto face_coordinates(const Config& config)
 {
     auto x0 = config.domain[0];
     auto x1 = config.domain[1];
-    auto dx = config.dx;
-    auto ni = int((x1 - x0) / dx);
+    auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
+    auto dx = (x1 - x0) / ni;
     auto ic = range(ni + 1);
     auto xc = ic * dx + x0;
     return xc;
