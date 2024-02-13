@@ -51,10 +51,10 @@ state, and the diagnostics.
 #include <cstdio>
 #include <functional>
 #include <memory>
-#include <mutex>
+// #include <mutex>
 #include <tuple>
-#include <queue>
-#include <thread>
+// #include <queue>
+// #include <thread>
 #include <variant>
 #include <SDL.h>
 #include "imgui.h"
@@ -956,6 +956,10 @@ struct SimulationProcess
         }
         return true;
     }
+    bool operator()(Command command)
+    {
+        return std::visit(*this, command);
+    }
     Status status() const
     {
         auto status = Status();
@@ -971,16 +975,14 @@ struct SimulationProcess
     }
     Blast sim;
     State state;
-    double secs;
+    double secs = 1.0;
 };
 
 auto responder(std::function<Command(Status)> next)
 {
     return [next] {
-        auto s = SimulationProcess();
-
-        while (std::visit(s, next(s.status()))) {
-
+        auto p = SimulationProcess();
+        while (p(next(p.status()))) {
         }
     };
 }
@@ -1047,7 +1049,7 @@ public:
         }
         ImGui::SameLine();
         ImGui::Text("%s", status.message.data);
-        // ImGui::SameLine();
+
         if (ImGui::Button("Style")) {
             show_style = true;
         }
@@ -1115,25 +1117,30 @@ public:
     {
         bool done = false;
 
-        auto m = std::mutex();
-        auto queue = std::queue<Command>();
-        auto last_status = Status();
-        auto sim_thread = std::thread(responder([&m, &queue, &last_status] (Status status) -> Command
-        {
-            {
-                auto lock = std::lock_guard<std::mutex>(m);
-                last_status = status;
-            }
-            while (true) {
-                auto lock = std::lock_guard<std::mutex>(m);
-                if (! queue.empty()) {
-                    auto command = queue.front();
-                    queue.pop();
-                    return command;
-                }
-            }
-            assert(false);
-        }));
+        // ===> If putting the simulation on a background thread <===
+        //
+        // auto m = std::mutex();
+        // auto queue = std::queue<Command>();
+        // auto last_status = Status();
+        // auto sim_thread = std::thread(responder([&m, &queue, &last_status] (Status status) -> Command
+        // {
+        //     {
+        //         auto lock = std::lock_guard<std::mutex>(m);
+        //         last_status = status;
+        //     }
+        //     while (true) {
+        //         auto lock = std::lock_guard<std::mutex>(m);
+        //         if (! queue.empty()) {
+        //             auto command = queue.front();
+        //             queue.pop();
+        //             return command;
+        //         }
+        //     }
+        //     assert(false);
+        // }));
+        //
+        // ===> Else <===
+        auto sim_process = SimulationProcess();
 
         {
             auto config = Config();
@@ -1147,8 +1154,12 @@ public:
                     set_from_key_vals(config, argv[n]);
                 }
             }
-            auto lock = std::lock_guard<std::mutex>(m);
-            queue.push(config);
+            // ===> If putting the simulation on a background thread <===
+            // auto lock = std::lock_guard<std::mutex>(m);
+            // queue.push(config);
+            //
+            // ===> Else <===
+            sim_process(config);
         }
 
         while (! done)
@@ -1163,35 +1174,44 @@ public:
                      event.window.event == SDL_WINDOWEVENT_CLOSE &&
                      event.window.windowID == SDL_GetWindowID(window)))
                 {
-                    auto guard = std::lock_guard<std::mutex>(m);
-                    queue.push(Action::quit);
+                    // ===> If putting the simulation on a background thread <===
+                    // auto guard = std::lock_guard<std::mutex>(m);
+                    // queue.push(Action::quit);
+                    // ===> Else <===
+                    sim_process(Action::quit);
                     done = true;
                 }
             }
 
             @autoreleasepool {
-                auto guard = std::lock_guard<std::mutex>(m);
                 auto d = new_frame();
-                auto command = draw(last_status);
 
-                if (! queue.empty() &&
-                    std::holds_alternative<Action>(command) &&
-                    std::holds_alternative<Action>(queue.back()) &&
-                    std::get<Action>(command) == std::get<Action>(queue.back())) {
-                    // skip this command, it's already in the queue
-                } else {
-                    queue.push(command);
-                }
+                // ===> If putting the simulation on a background thread <===
+                // auto guard = std::lock_guard<std::mutex>(m);
+                // auto command = draw(last_status);
+                // if (! queue.empty() &&
+                //     std::holds_alternative<Action>(command) &&
+                //     std::holds_alternative<Action>(queue.back()) &&
+                //     std::get<Action>(command) == std::get<Action>(queue.back())) {
+                //     // skip this command, it's already in the queue
+                // } else {
+                //     queue.push(command);
+                // }
+                // if (std::holds_alternative<Action>(command) && std::get<Action>(command) == Action::quit) {
+                //     done = true;
+                // }
 
-                if (std::holds_alternative<Action>(command) && std::get<Action>(command) == Action::quit) {
+                if (! sim_process(draw(sim_process.status()))) {
                     done = true;
                 }
+
                 // ImGui::ShowDemoWindow();
                 // ImPlot::ShowDemoWindow();
                 end_frame(d);
             }
         }
-        sim_thread.join();
+        // ===> If putting the simulation on a background thread <===
+        // sim_thread.join();
     }
 private:
     std::tuple<id<CAMetalDrawable>, id<MTLCommandBuffer>, id <MTLRenderCommandEncoder>> new_frame()
