@@ -924,8 +924,12 @@ using Command = std::variant<Action, Config>;
 
 
 
-struct CommandResponder
+struct SimulationProcess
 {
+    SimulationProcess()
+    {
+        sim.initial_state(state);
+    }
     bool operator()(Action action)
     {
         switch (action) {
@@ -952,37 +956,31 @@ struct CommandResponder
         }
         return true;
     }
-    Blast& sim;
-    State& state;
-    double& secs;
-};
-
-auto status(const Blast& sim, State state, double secs)
-{
-    auto status = Status();
-    status.config = sim.get_config();
-    status.state = state;
-    status.message = sim.status_message(state, secs);
-    int col = 0;
-    while (auto name = sim.get_product_name(col)) {
-        status.products[name] = sim.compute_product(state, col);
-        ++col;
+    Status status() const
+    {
+        auto status = Status();
+        status.config = sim.get_config();
+        status.state = state;
+        status.message = sim.status_message(state, secs);
+        int col = 0;
+        while (auto name = sim.get_product_name(col)) {
+            status.products[name] = sim.compute_product(state, col);
+            ++col;
+        }
+        return status;
     }
-    return status;
-}
+    Blast sim;
+    State state;
+    double secs;
+};
 
 auto responder(std::function<Command(Status)> next)
 {
     return [next] {
-        auto sim = Blast();
-        auto state = State();
-        auto secs = 1.0;
-        auto responder = CommandResponder{sim, state, secs};
+        auto s = SimulationProcess();
 
-        sim.initial_state(state);
+        while (std::visit(s, next(s.status()))) {
 
-        while (std::visit(responder, next(status(sim, state, secs))))
-        {
         }
     };
 }
@@ -1115,6 +1113,8 @@ public:
     }
     void run(int argc, const char *argv[])
     {
+        bool done = false;
+
         auto m = std::mutex();
         auto queue = std::queue<Command>();
         auto last_status = Status();
@@ -1134,7 +1134,6 @@ public:
             }
             assert(false);
         }));
-        bool done = false;
 
         {
             auto config = Config();
