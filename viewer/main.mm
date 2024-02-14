@@ -20,28 +20,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ================================================================================
-
-
-Approach to the UI
-------------------
-
-There is a main thread, running the UI, and a worker thread, running the simulation.
-
-The UI thread passes commands to the simulation thread. The commands include:
-
-- restart the simulation
-- start the simulation
-- step the simulation
-- new Config instances
-
-Some changes to the configuraiton (e.g. setup, BC, grid spacing) imply that a
-new simulation must be started. Others (e.g. method) can be applied to a
-running simulation.
-
-The simulation passes back to the UI a sequence of messages. The messages
-include an iteration report, including the Mzps measurement, the simulation
-state, and the diagnostics.
-
 */
 
 #import <Metal/Metal.h>
@@ -906,6 +884,33 @@ public:
 
 
 
+/**
+================================================================================
+
+Approach to the UI
+------------------
+
+There is a main thread, running the UI, and a worker thread, running the
+simulation.
+
+The UI thread passes commands to the simulation thread. The commands
+include:
+
+- restart the simulation
+- start the simulation
+- step the simulation
+- new config instances
+
+Some changes to the configuraiton (e.g. setup, BC, grid spacing) imply that
+a new simulation must be started. Others (e.g. method) can be applied to a
+running simulation.
+
+The simulation passes back to the UI a sequence of status objects. The
+status objects include an iteration report, including the Mzps measurement,
+the simulation state, and the diagnostics.
+================================================================================
+*/
+
 enum struct Action
 {
     nothing,
@@ -933,14 +938,16 @@ struct SimulationProcess
     bool operator()(Action action)
     {
         switch (action) {
-        case Action::nothing: return true;
+        case Action::nothing:
+            return true;
         case Action::restart:
             sim.initial_state(state);
             return true;
         case Action::step:
             secs = time_call(sim.updates_per_batch(), [&] { sim.update(state); });
             return true;
-        case Action::quit: return false;
+        case Action::quit:
+            return false;
         }
     }
     bool operator()(Config config)
@@ -978,14 +985,15 @@ struct SimulationProcess
     double secs = 1.0;
 };
 
-auto responder(std::function<Command(Status)> next)
-{
-    return [next] {
-        auto p = SimulationProcess();
-        while (p(next(p.status()))) {
-        }
-    };
-}
+// ===> If putting the simulation on a background thread <===
+// auto responder(std::function<Command(Status)> next)
+// {
+//     return [next] {
+//         auto p = SimulationProcess();
+//         while (p(next(p.status()))) {
+//         }
+//     };
+// }
 
 
 
@@ -1111,13 +1119,11 @@ public:
             // }
             ImGui::End();
         }
-
         return command;
     }
-    void run(int argc, const char *argv[])
+    int run(int argc, const char *argv[])
     {
         bool done = false;
-
         // ===> If putting the simulation on a background thread <===
         //
         // auto m = std::mutex();
@@ -1142,7 +1148,6 @@ public:
         //
         // ===> Else <===
         auto sim_process = SimulationProcess();
-
         {
             auto config = Config();
             for (int n = 1; n < argc; ++n)
@@ -1162,11 +1167,9 @@ public:
             // ===> Else <===
             sim_process(config);
         }
-
         while (! done)
         {
             SDL_Event event;
-
             while (SDL_PollEvent(&event))
             {
                 ImGui_ImplSDL2_ProcessEvent(&event);
@@ -1183,10 +1186,8 @@ public:
                     done = true;
                 }
             }
-
             @autoreleasepool {
                 auto d = new_frame();
-
                 // ===> If putting the simulation on a background thread <===
                 // auto guard = std::lock_guard<std::mutex>(m);
                 // auto command = draw(last_status);
@@ -1201,11 +1202,9 @@ public:
                 // if (std::holds_alternative<Action>(command) && std::get<Action>(command) == Action::quit) {
                 //     done = true;
                 // }
-
                 if (! sim_process(draw(sim_process.status()))) {
                     done = true;
                 }
-
                 // ImGui::ShowDemoWindow();
                 // ImPlot::ShowDemoWindow();
                 end_frame(d);
@@ -1213,6 +1212,7 @@ public:
         }
         // ===> If putting the simulation on a background thread <===
         // sim_thread.join();
+        return 0;
     }
 private:
     std::tuple<id<CAMetalDrawable>, id<MTLCommandBuffer>, id <MTLRenderCommandEncoder>> new_frame()
@@ -1253,6 +1253,7 @@ private:
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         ImGui::StyleColorsDark();
+        // WARNING: font loading assumes pwd is the project root; should be fixed
         io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/DroidSans.ttf", 16.0f);
         io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Roboto-Medium.ttf", 16.0f);
         io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Cousine-Regular.ttf", 15.0f);
@@ -1318,7 +1319,5 @@ private:
 
 int main(int argc, const char **argv)
 {
-    auto app = App();
-    app.run(argc, argv);
-    return 0;
+    return App().run(argc, argv);
 }
