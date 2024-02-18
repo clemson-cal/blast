@@ -39,7 +39,7 @@ using cons_array_t = memory_backed_array_t<1, cons_t, ref_counted_ptr_t>;
 using prim_array_t = memory_backed_array_t<1, prim_t, ref_counted_ptr_t>;
 using Product = memory_backed_array_t<1, double, ref_counted_ptr_t>;
 
-#define gamma (4.0 / 3.0)
+#define gamma_law (4.0 / 3.0)
 #define min2(a, b) ((a) < (b) ? (a) : (b))
 #define max2(a, b) ((a) > (b) ? (a) : (b))
 #define min3(a, b, c) min2(a, min2(b, c))
@@ -89,7 +89,7 @@ HD static auto enthalpy_density(prim_t p) -> double
 {
     auto rho = p[0];
     auto pre = p[2];
-    return rho + pre * (1.0 + 1.0 / (gamma - 1.0));
+    return rho + pre * (1.0 + 1.0 / (gamma_law - 1.0));
 }
 
 HD static auto prim_to_cons(prim_t p) -> cons_t
@@ -110,7 +110,7 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 {
     auto newton_iter_max = 50;
     auto error_tolerance = 1e-12 * (cons[0] + cons[2]);
-    auto gm = gamma;
+    auto gm = gamma_law;
     auto m = cons[0];
     auto tau = cons[2];
     auto ss = momentum_squared(cons);
@@ -162,7 +162,7 @@ HD static auto sound_speed_squared(prim_t p) -> double
 {
     auto pre = p[2];
     auto rho_h = enthalpy_density(p);
-    return gamma * pre / rho_h;
+    return gamma_law * pre / rho_h;
 }
 
 HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
@@ -308,9 +308,9 @@ struct Config
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
-    double dx = 1e-2;
     double bmk_gamma_shock = 5.0;
-    vec_t<double, 2> domain = {{1.0, 10.0}}; // x0, x1
+    float dx = 1e-2;
+    vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<char, 2> bc = {{'f', 'f'}};
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
@@ -696,7 +696,7 @@ public:
                     auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
                     auto u = 0.1; // wind gamma-beta
                     auto rho = f / (x * x * u);
-                    auto pre = 1e-10 * pow(rho, gamma); // uniform specfic entropy
+                    auto pre = 1e-10 * pow(rho, gamma_law); // uniform specfic entropy
                     return vec(rho, 0.1, pre);
                 }
             case Setup::bmk: {
@@ -725,7 +725,7 @@ public:
                 auto r_in = 0.1 * (x1 - x0);
                 auto rho_in = 1.0;
                 auto rho_out = 1.0;
-                auto p_in = energy / (4.0 / 3.0 * 3.14159 * pow(r_in, 3.0)) * (gamma - 1.0);
+                auto p_in = energy / (4.0 / 3.0 * 3.14159 * pow(r_in, 3.0)) * (gamma_law - 1.0);
                 auto p_out = rho_out * 1.0e-6;
                 if (x < r_in) {
                     return vec(rho_in, 0.0, p_in);
@@ -867,6 +867,8 @@ public:
 
 
 
+#ifndef VAPOR_GUI
+
 int main(int argc, const char **argv)
 {
     try {
@@ -877,3 +879,451 @@ int main(int argc, const char **argv)
     }
     return 0;
 }
+
+#else
+
+/**
+================================================================================
+
+Approach to the UI
+------------------
+
+Note: the implementation below assumes MacOS + ImGui + SDL2 + Metal. Other
+platforms and ImGui backends could easily be supported.
+
+The UI loop passes commands to the simulation process. The commands include:
+
+- restart the simulation
+- start the simulation
+- step the simulation
+- new config instances
+
+The simulation passes back to the UI a sequence of status objects. The
+status objects include the simulation state, an iteration message, the
+current configuration struct, and a map of science products.
+================================================================================
+*/
+
+#import <Metal/Metal.h>
+#import <QuartzCore/QuartzCore.h>
+#include <tuple>
+#include <variant>
+#include <SDL.h>
+#include "imgui.h"
+#include "imgui_impl_metal.h"
+#include "imgui_impl_sdl2.h"
+#include "implot.h"
+#include "imfilebrowser.h"
+
+enum struct Action
+{
+    nothing,
+    restart,
+    step,
+    quit,
+};
+struct Status {
+    Config config;
+    State state;
+    vec_t<char, 256> message;
+    std::map<std::string, Product> products;
+};
+using Command = std::variant<Action, Config>;
+
+
+
+
+struct SimulationProcess
+{
+    SimulationProcess()
+    {
+        sim.initial_state(state);
+    }
+    bool operator()(Action action)
+    {
+        switch (action) {
+        case Action::nothing:
+            return true;
+        case Action::restart:
+            sim.initial_state(state);
+            return true;
+        case Action::step:
+            secs = time_call(sim.updates_per_batch(), [&] { sim.update(state); });
+            return true;
+        case Action::quit:
+            return false;
+        }
+    }
+    bool operator()(Config config)
+    {
+        if (sim.get_config().dx != config.dx ||
+            sim.get_config().domain != config.domain ||
+            sim.get_config().setup != config.setup) {
+            sim.get_config() = config;
+            sim.initial_state(state);
+        }
+        else {
+            sim.get_config() = config;            
+        }
+        return true;
+    }
+    bool operator()(Command command)
+    {
+        return std::visit(*this, command);
+    }
+    Status status() const
+    {
+        auto status = Status();
+        status.config = sim.get_config();
+        status.state = state;
+        status.message = sim.status_message(state, secs);
+        int col = 0;
+        while (auto name = sim.get_product_name(col)) {
+            status.products[name] = sim.compute_product(state, col);
+            ++col;
+        }
+        return status;
+    }
+    Blast sim;
+    State state;
+    double secs = 1.0;
+};
+
+// ===> If putting the simulation on a background thread <===
+// auto responder(std::function<Command(Status)> next)
+// {
+//     return [next] {
+//         auto p = SimulationProcess();
+//         while (p(next(p.status()))) {
+//         }
+//     };
+// }
+
+
+
+
+class App
+{
+public:
+    App()
+    {
+        if (startup()) {
+            printf("startup error\n");
+            exit(1);
+        }
+        browser = ImGui::FileBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
+        browser.SetTitle("File Browser");
+        browser.SetTypeFilters({".cfg"});
+    }
+    ~App()
+    {
+        shutdown();
+    }
+    Command draw(const Status& status)
+    {
+        Command command = Action::nothing;
+        static bool show_config = false;
+        static bool show_style = false;
+        static bool auto_step = false;
+        static bool draw_markers = true;
+
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("Window", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+        if (ImGui::Button("Quit")) {
+            auto_step = false;
+            command = Action::quit;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Config")) {
+            show_config = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) {
+            browser.Open();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Restart")) {
+            auto_step = false;
+            command = Action::restart;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(auto_step);
+        if (ImGui::Button("Step")) {
+            command = Action::step;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Checkbox("Auto", &auto_step);
+        if (auto_step) {
+            command = Action::step;
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s", status.message.data);
+
+        if (ImGui::Button("Style")) {
+            show_style = true;
+        }
+
+        if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
+        {
+            auto x = status.products.at("cell_coordinate");
+
+            for (const auto& [name, y] : status.products) {
+                if (name != "cell_coordinate") {
+                    if (draw_markers) {
+                        ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
+                        ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
+                    }
+                    ImPlot::PlotLine(name.data(), x.data(), y.data(), x.size());
+                }
+            }
+            ImPlot::EndPlot();
+        }
+
+        ImGui::End();
+        browser.Display();
+
+        if (browser.HasSelected())
+        {
+            auto config = status.config;
+            auto fname = browser.GetSelected().string();
+            set_from_key_vals(config, readfile(fname.data()).data());
+            browser.ClearSelected();
+            command = config;
+        }
+
+        // const char* rk_options[] = {"None", "RK1", "RK2", "RK3"};
+        // const char* method_options[] = {"pcm", "plm"};
+        // static int method_index = 0;
+
+        if (show_style) {
+            ImGui::SetNextWindowSize(ImVec2(300.0, 0.0));
+            ImGui::Begin("Style", &show_style, ImGuiWindowFlags_NoResize);
+            ImGui::Checkbox("Markers", &draw_markers);
+            ImGui::End();
+        }
+        if (show_config) {
+            auto config = status.config;
+
+            ImGui::SetNextWindowSize(ImVec2(300.0, 0.0));
+            ImGui::Begin("Config", &show_config, ImGuiWindowFlags_NoResize);
+
+            if (ImGui::SliderFloat("dx", &config.dx, 1e-1f, 1e-5f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
+                command = config;
+            }
+            if (ImGui::DragFloatRange2("domain", &config.domain[0], &config.domain[1], 0.05f)) {
+                command = config;
+            }
+            // if (ImGui::Combo("rk", &config.rk, rk_options, IM_ARRAYSIZE(rk_options))) {
+            // }
+            // if (ImGui::Combo("method", &method_index, method_options, IM_ARRAYSIZE(method_options))) {
+            //     config.method = method_options[method_index];
+            // }
+            ImGui::End();
+        }
+        return command;
+    }
+    int run(int argc, const char *argv[])
+    {
+        bool done = false;
+        // ===> If putting the simulation on a background thread <===
+        //
+        // auto m = std::mutex();
+        // auto queue = std::queue<Command>();
+        // auto last_status = Status();
+        // auto sim_thread = std::thread(responder([&m, &queue, &last_status] (Status status) -> Command
+        // {
+        //     {
+        //         auto lock = std::lock_guard<std::mutex>(m);
+        //         last_status = status;
+        //     }
+        //     while (true) {
+        //         auto lock = std::lock_guard<std::mutex>(m);
+        //         if (! queue.empty()) {
+        //             auto command = queue.front();
+        //             queue.pop();
+        //             return command;
+        //         }
+        //     }
+        //     assert(false);
+        // }));
+        //
+        // ===> Else <===
+        auto sim_process = SimulationProcess();
+        {
+            auto config = Config();
+            for (int n = 1; n < argc; ++n)
+            {
+                if (argv[n][0] == '-') {
+                    // do nothing
+                } else if (strstr(argv[n], ".cfg")) {
+                    set_from_key_vals(config, readfile(argv[n]).data());
+                } else {
+                    set_from_key_vals(config, argv[n]);
+                }
+            }
+            // ===> If putting the simulation on a background thread <===
+            // auto lock = std::lock_guard<std::mutex>(m);
+            // queue.push(config);
+            //
+            // ===> Else <===
+            sim_process(config);
+        }
+        while (! done)
+        {
+            SDL_Event event;
+            while (SDL_PollEvent(&event))
+            {
+                ImGui_ImplSDL2_ProcessEvent(&event);
+                if ((event.type == SDL_QUIT) ||
+                    (event.type == SDL_WINDOWEVENT &&
+                     event.window.event == SDL_WINDOWEVENT_CLOSE &&
+                     event.window.windowID == SDL_GetWindowID(window)))
+                {
+                    // ===> If putting the simulation on a background thread <===
+                    // auto guard = std::lock_guard<std::mutex>(m);
+                    // queue.push(Action::quit);
+                    // ===> Else <===
+                    sim_process(Action::quit);
+                    done = true;
+                }
+            }
+            @autoreleasepool {
+                auto d = new_frame();
+                // ===> If putting the simulation on a background thread <===
+                // auto guard = std::lock_guard<std::mutex>(m);
+                // auto command = draw(last_status);
+                // if (! queue.empty() &&
+                //     std::holds_alternative<Action>(command) &&
+                //     std::holds_alternative<Action>(queue.back()) &&
+                //     std::get<Action>(command) == std::get<Action>(queue.back())) {
+                //     // skip this command, it's already in the queue
+                // } else {
+                //     queue.push(command);
+                // }
+                // if (std::holds_alternative<Action>(command) && std::get<Action>(command) == Action::quit) {
+                //     done = true;
+                // }
+                if (! sim_process(draw(sim_process.status()))) {
+                    done = true;
+                }
+                // ImGui::ShowDemoWindow();
+                // ImPlot::ShowDemoWindow();
+                end_frame(d);
+            }
+        }
+        // ===> If putting the simulation on a background thread <===
+        // sim_thread.join();
+        return 0;
+    }
+private:
+    std::tuple<id<CAMetalDrawable>, id<MTLCommandBuffer>, id <MTLRenderCommandEncoder>> new_frame()
+    {
+        float clear_color[4] = {0.f, 0.f, 0.f, 1.f};
+        int width, height;
+        SDL_GetRendererOutputSize(renderer, &width, &height);
+        layer.drawableSize = CGSizeMake(width, height);
+        id<CAMetalDrawable> drawable = [layer nextDrawable];
+        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(clear_color[0] * clear_color[3], clear_color[1] * clear_color[3], clear_color[2] * clear_color[3], clear_color[3]);
+        renderPassDescriptor.colorAttachments[0].texture = drawable.texture;
+        renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+        renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id <MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+        [renderEncoder pushDebugGroup:@"ImGui demo"];
+        ImGui_ImplMetal_NewFrame(renderPassDescriptor);
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+        return std::make_tuple(drawable, commandBuffer, renderEncoder);
+    }
+    void end_frame(std::tuple<id<CAMetalDrawable>, id<MTLCommandBuffer>, id <MTLRenderCommandEncoder>> t)
+    {
+        auto [drawable, commandBuffer, renderEncoder] = t;
+        ImGui::Render();
+        ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, renderEncoder);
+        [renderEncoder popDebugGroup];
+        [renderEncoder endEncoding];
+        [commandBuffer presentDrawable:drawable];
+        [commandBuffer commit];
+    }
+    int startup()
+    {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImPlot::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        ImGui::StyleColorsDark();
+        // WARNING: font loading assumes pwd is the project root; should be fixed
+        // io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/DroidSans.ttf", 16.0f);
+        // io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Roboto-Medium.ttf", 16.0f);
+        // io.Fonts->AddFontFromFileTTF("imgui/misc/fonts/Cousine-Regular.ttf", 15.0f);
+
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
+        {
+            printf("Error: %s\n", SDL_GetError());
+            return -1;
+        }
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");
+        SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+
+        window = SDL_CreateWindow("Vapor Viewer",
+            SDL_WINDOWPOS_CENTERED,
+            SDL_WINDOWPOS_CENTERED,
+            1280, 720,
+            SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+
+        if (window == nullptr)
+        {
+            printf("Error creating window: %s\n", SDL_GetError());
+            return -2;
+        }
+
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        if (renderer == nullptr)
+        {
+            printf("Error creating renderer: %s\n", SDL_GetError());
+            return -3;
+        }
+
+        layer = (__bridge CAMetalLayer*)SDL_RenderGetMetalLayer(renderer);
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        ImGui_ImplMetal_Init(layer.device);
+        ImGui_ImplSDL2_InitForMetal(window);
+
+        commandQueue = [layer.device newCommandQueue];
+        renderPassDescriptor = [MTLRenderPassDescriptor new];
+
+        return 0;
+    }
+    void shutdown()
+    {
+        ImGui_ImplMetal_Shutdown();
+        ImGui_ImplSDL2_Shutdown();
+        ImPlot::DestroyContext();
+        ImGui::DestroyContext();
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+    }
+
+    SDL_Window *window;
+    SDL_Renderer* renderer;
+    CAMetalLayer *layer;
+    id<MTLCommandQueue> commandQueue;
+    MTLRenderPassDescriptor* renderPassDescriptor;
+    ImGui::FileBrowser browser;
+};
+
+
+
+
+int main(int argc, const char **argv)
+{
+    return App().run(argc, argv);
+}
+
+#endif

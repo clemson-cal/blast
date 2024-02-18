@@ -1,9 +1,11 @@
+.DS_Store
 *.dSYM
 *.h5
-.DS_Store
-.venv
+/.venv
 /*.cfg
-bin
-build
-Makefile
-system.json
+/*.ini
+/bin
+/build
+/Makefile
+/system.json
+/gui
