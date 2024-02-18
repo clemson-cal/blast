@@ -3,5 +3,5 @@ implot
 session.cfg
 imgui.ini
 imgui-filebrowser
-blast-ui
+blast_gui
 *.o

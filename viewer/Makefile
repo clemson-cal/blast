@@ -13,7 +13,7 @@ SRC += \
 	$(GUI_HOME)/implot/implot.cpp \
 	$(GUI_HOME)/implot/implot_demo.cpp \
 	$(GUI_HOME)/implot/implot_items.cpp \
-	blast_gui.mm
+	blast_gui.cpp
 OBJ += $(addsuffix .o, $(basename $(SRC)))
 LIB += -framework Metal -framework Cocoa
 LIB += -lhdf5
@@ -29,12 +29,14 @@ CXXFLAGS += -I$(GUI_HOME)/implot
 CXXFLAGS += -I$(GUI_HOME)/imgui-filebrowser
 CXXFLAGS += -I$(VAPOR_HOME)/include
 
+$(EXE) : $(OBJ)
+	$(CXX) -o $@ $^ $(LIB)
 %.o : %.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 %.o : %.mm
 	$(CXX) $(CXXFLAGS) -ObjC++ -fobjc-weak -fobjc-arc -c -o $@ $<
-$(EXE) : $(OBJ)
-	$(CXX) -o $@ $^ $(LIB)
+blast_gui.o : blast_gui.cpp
+	$(CXX) $(CXXFLAGS) -ObjC++ -fobjc-weak -fobjc-arc -c -o $@ $<
 show:
 	echo $(LIB)
 clean:
