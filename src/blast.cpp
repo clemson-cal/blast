@@ -471,7 +471,7 @@ static State next_pcm(const State& state, const G& geom, const Config& config, p
     return State{
         state.time + dt,
         state.iter + 1.0,
-        set_bc(u.at(interior_cells) + du, config, 1),
+        set_bc(u.add(du), config, 1),
     };
     return state;
 }
@@ -536,7 +536,7 @@ static State next_plm(const State& state, const G& geom, const Config& config, p
     return State{
         state.time + dt,
         state.iter + 1.0,
-        set_bc(u.at(interior_cells) + du, config, 2),
+        set_bc(u.add(du), config, 2),
     };
 }
 
