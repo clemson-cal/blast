@@ -309,6 +309,8 @@ struct Config
     double spi = 0.0;
     double tsi = 0.0;
     double bmk_gamma_shock = 5.0;
+    double thermal_bomb_energy = 1.0E6;
+    double thermal_bomb_rho_out = 1.0;
     float dx = 1e-2;
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<char, 2> bc = {{'f', 'f'}};
@@ -330,6 +332,8 @@ VISITABLE_STRUCT(Config,
     tsi,
     dx,
     bmk_gamma_shock,
+    thermal_bomb_energy,
+    thermal_bomb_rho_out,
     domain,
     bc,
     sp,
@@ -663,6 +667,8 @@ public:
         auto x0 = config.domain[0];
         auto x1 = config.domain[1];
         auto bmk_gamma_shock = config.bmk_gamma_shock;
+        auto thermal_bomb_energy = config.thermal_bomb_energy;
+        auto thermal_bomb_rho_out = config.thermal_bomb_rho_out;
         auto initial_primitive = [=] HD (double x) -> prim_t
         {
             switch (setup)
@@ -721,10 +727,10 @@ public:
                     }
                 }
             case Setup::thermal_bomb: {
-                auto energy = 1.0;
-                auto r_in = 0.1 * (x1 - x0);
+                auto energy = thermal_bomb_energy;
+                auto r_in = 1.0;
                 auto rho_in = 1.0;
-                auto rho_out = 1.0;
+                auto rho_out = thermal_bomb_rho_out;
                 auto p_in = energy / (4.0 / 3.0 * 3.14159 * pow(r_in, 3.0)) * (gamma_law - 1.0);
                 auto p_out = rho_out * 1.0e-6;
                 if (x < r_in) {
