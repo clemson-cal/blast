@@ -6,6 +6,9 @@
 	"programs": {
 		"blast": {
 			"deps": ["hdf5"]
+		},
+		"blast2d": {
+			"deps": ["hdf5"]
 		}
 	}
 }
