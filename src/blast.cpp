@@ -311,6 +311,7 @@ struct Config
     double bmk_gamma_shock = 5.0;
     double bomb_energy = 1.0E6;
     double bomb_rho_out = 1.0;
+    double shell_u = 30.0;
     float dx = 1e-2;
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<char, 2> bc = {{'f', 'f'}};
@@ -334,6 +335,7 @@ VISITABLE_STRUCT(Config,
     bmk_gamma_shock,
     bomb_energy,
     bomb_rho_out,
+    shell_u,
     domain,
     bc,
     sp,
@@ -669,6 +671,7 @@ public:
         auto bmk_gamma_shock = config.bmk_gamma_shock;
         auto bomb_energy = config.bomb_energy;
         auto bomb_rho_out = config.bomb_rho_out;
+        auto shell_u = config.shell_u;
         auto initial_primitive = [=] HD (double x) -> prim_t
         {
             switch (setup)
@@ -740,13 +743,13 @@ public:
                 }
             }
             case Setup::shell: {
-                auto r_in = 0.1 * (x1 - x0);
+                auto r_in = 1.0;
                 auto rho_in = x;
                 auto rho_out = 1.0;
                 if (x < r_in) {
-                    auto bg = x * 30.0;
+                    auto u = x * shell_u;
                     auto p = rho_in * 1e-1;
-                    return vec(rho_in, bg, p);
+                    return vec(rho_in, u, p);
                 } else {
                     return vec(rho_out, 0.0, rho_out * 1e-6);
                 }
