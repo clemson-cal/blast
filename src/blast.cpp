@@ -265,8 +265,8 @@ enum class Setup
     mm96p1,
     wind,
     bmk,
-    thermal_bomb,
-    fast_shell,
+    bomb,
+    shell,
 };
 static Setup setup_from_string(const std::string& name)
 {
@@ -275,8 +275,8 @@ static Setup setup_from_string(const std::string& name)
     if (name == "mm96p1") return Setup::mm96p1;
     if (name == "wind") return Setup::wind;
     if (name == "bmk") return Setup::bmk;
-    if (name == "thermal_bomb") return Setup::thermal_bomb;
-    if (name == "fast_shell") return Setup::fast_shell;
+    if (name == "bomb") return Setup::bomb;
+    if (name == "shell") return Setup::shell;
     throw std::runtime_error("unknown setup " + name);
 }
 
@@ -309,8 +309,8 @@ struct Config
     double spi = 0.0;
     double tsi = 0.0;
     double bmk_gamma_shock = 5.0;
-    double thermal_bomb_energy = 1.0E6;
-    double thermal_bomb_rho_out = 1.0;
+    double bomb_energy = 1.0E6;
+    double bomb_rho_out = 1.0;
     float dx = 1e-2;
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<char, 2> bc = {{'f', 'f'}};
@@ -332,8 +332,8 @@ VISITABLE_STRUCT(Config,
     tsi,
     dx,
     bmk_gamma_shock,
-    thermal_bomb_energy,
-    thermal_bomb_rho_out,
+    bomb_energy,
+    bomb_rho_out,
     domain,
     bc,
     sp,
@@ -667,8 +667,8 @@ public:
         auto x0 = config.domain[0];
         auto x1 = config.domain[1];
         auto bmk_gamma_shock = config.bmk_gamma_shock;
-        auto thermal_bomb_energy = config.thermal_bomb_energy;
-        auto thermal_bomb_rho_out = config.thermal_bomb_rho_out;
+        auto bomb_energy = config.bomb_energy;
+        auto bomb_rho_out = config.bomb_rho_out;
         auto initial_primitive = [=] HD (double x) -> prim_t
         {
             switch (setup)
@@ -726,29 +726,29 @@ public:
                         return vec(1.0, 0.0, 1e-8);
                     }
                 }
-            case Setup::thermal_bomb: {
-                auto energy = thermal_bomb_energy;
+            case Setup::bomb: {
                 auto r_in = 1.0;
-                auto rho_in = 1.0;
-                auto rho_out = thermal_bomb_rho_out;
-                auto p_in = energy / (4.0 / 3.0 * 3.14159 * pow(r_in, 3.0)) * (gamma_law - 1.0);
-                auto p_out = rho_out * 1.0e-6;
+                auto bomb_mass = 1.0;
+                auto bomb_volume = 4.0 / 3.0 * M_PI * pow(r_in, 3.0);
+                auto bomb_rho_in = bomb_mass / bomb_volume;
+                auto p_in = bomb_energy / bomb_volume * (gamma_law - 1.0);
+                auto p_out = bomb_rho_out * 1e-6;
                 if (x < r_in) {
-                    return vec(rho_in, 0.0, p_in);
+                    return vec(bomb_rho_in, 0.0, p_in);
                 } else {
-                    return vec(rho_out, 0.0, p_out);
+                    return vec(bomb_rho_out, 0.0, p_out);
                 }
             }
-            case Setup::fast_shell: {
+            case Setup::shell: {
                 auto r_in = 0.1 * (x1 - x0);
                 auto rho_in = x;
                 auto rho_out = 1.0;
                 if (x < r_in) {
                     auto bg = x * 30.0;
-                    auto p = rho_in * 1.0E-1;
+                    auto p = rho_in * 1e-1;
                     return vec(rho_in, bg, p);
                 } else {
-                    return vec(rho_out, 0.0, rho_out * 1.0e-6);
+                    return vec(rho_out, 0.0, rho_out * 1e-6);
                 }
             }
             default: return {};
