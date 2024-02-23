@@ -312,6 +312,7 @@ struct Config
     double bomb_energy = 1.0E6;
     double bomb_rho_out = 1.0;
     double shell_u = 30.0;
+    double r_dec = 10.0;
     float dx = 1e-2;
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<char, 2> bc = {{'f', 'f'}};
@@ -336,6 +337,7 @@ VISITABLE_STRUCT(Config,
     bomb_energy,
     bomb_rho_out,
     shell_u,
+    r_dec,
     domain,
     bc,
     sp,
@@ -672,6 +674,7 @@ public:
         auto bomb_energy = config.bomb_energy;
         auto bomb_rho_out = config.bomb_rho_out;
         auto shell_u = config.shell_u;
+        auto r_dec = config.r_dec;
         auto initial_primitive = [=] HD (double x) -> prim_t
         {
             switch (setup)
@@ -744,8 +747,8 @@ public:
             }
             case Setup::shell: {
                 auto r_in = 1.0;
-                auto rho_in = x;
                 auto rho_out = 1.0;
+                auto rho_in = x / r_in * (4.0 / 3.0) * rho_out * pow(r_dec / r_in, 3.0);
                 if (x < r_in) {
                     auto u = x * shell_u;
                     auto p = rho_in * 1e-1;
