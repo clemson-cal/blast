@@ -311,8 +311,9 @@ struct Config
     double bmk_gamma_shock = 5.0;
     double bomb_energy = 1.0E6;
     double bomb_rho_out = 1.0;
-    double shell_u = 30.0;
-    double r_dec = 10.0;
+    double shell_u = 25.0;
+    double shell_f = 100.0;
+    double shell_delta = 0.1;
     float dx = 1e-2;
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<char, 2> bc = {{'f', 'f'}};
@@ -337,7 +338,8 @@ VISITABLE_STRUCT(Config,
     bomb_energy,
     bomb_rho_out,
     shell_u,
-    r_dec,
+    shell_f,
+    shell_delta,
     domain,
     bc,
     sp,
@@ -674,7 +676,8 @@ public:
         auto bomb_energy = config.bomb_energy;
         auto bomb_rho_out = config.bomb_rho_out;
         auto shell_u = config.shell_u;
-        auto r_dec = config.r_dec;
+        auto shell_f = config.shell_f;
+        auto shell_delta = config.shell_delta;
         auto initial_primitive = [=] HD (double x) -> prim_t
         {
             switch (setup)
@@ -746,15 +749,18 @@ public:
                 }
             }
             case Setup::shell: {
-                auto r_in = 1.0;
                 auto rho_out = 1.0;
-                auto rho_in = x / r_in * (4.0 / 3.0) * rho_out * pow(r_dec / r_in, 3.0);
+                auto p_out = rho_out * 1e-6;
+
+                auto r_in = 1.0;
+                auto rho_in = shell_f * rho_out * exp(-pow(x-r_in, 2.0) / (pow(shell_delta, 2.0)) / 2.0);
+                auto u_in = shell_u * exp(-pow(x-r_in, 2.0) / (pow(shell_delta, 2.0)) / 2.0);
+                auto p_in = rho_in * 1e-1;
+
                 if (x < r_in) {
-                    auto u = x * shell_u;
-                    auto p = rho_in * 1e-1;
-                    return vec(rho_in, u, p);
+                    return vec(rho_in, u_in, p_in);
                 } else {
-                    return vec(rho_out, 0.0, rho_out * 1e-6);
+                    return vec(rho_out, 0.0, p_out);
                 }
             }
             default: return {};
