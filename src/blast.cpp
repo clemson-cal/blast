@@ -229,33 +229,6 @@ HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1)
 
 
 
-template<class X, class A, class V, class S>
-struct grid_geometry_t
-{
-    array_t<1, X> face_position;
-    array_t<1, A> face_area;
-    array_t<1, V> cell_volume;
-    S geometric_source_terms;
-};
-
-template<class X, class A, class V, class S>
-auto grid_geometry(
-    array_t<1, X> face_position,
-    array_t<1, A> face_area,
-    array_t<1, V> cell_volume,
-    S geometric_source_terms)
-{
-    return grid_geometry_t<X, A, V, S>{
-        face_position,
-        face_area,
-        cell_volume,
-        geometric_source_terms,
-    };
-}
-
-
-
-
 enum class Setup
 {
     uniform,
@@ -357,6 +330,102 @@ VISITABLE_STRUCT(Config,
 
 
 
+struct planar_geometry_t
+{
+    planar_geometry_t(const Config& config)
+    {
+        x0 = config.domain[0];
+        x1 = config.domain[1];
+        dx = (x1 - x0) / int((x1 - x0) / config.dx); // config.dx is essentially a hint
+    }
+    HD double face_position(int i) const
+    {
+        return x0 + dx * i;
+    }
+    HD double face_area(int i) const
+    {
+        return 1.0;
+    }
+    HD double cell_position(int i) const
+    {
+        return x0 + dx * (i + 0.5);
+    }
+    HD double cell_volume(int i) const
+    {
+        return dx;
+    }
+    HD cons_t source_terms(prim_t p, double rm, double rp) const
+    {
+        return {};
+    }
+    double x0;
+    double x1;
+    double dx;
+};
+
+struct spherical_geometry_t
+{
+    spherical_geometry_t(const Config& config)
+    {
+        r0 = config.domain[0];
+        r1 = config.domain[1];
+        dr = (r1 - r0) / int((r1 - r0) / config.dx); // config.dx is essentially a hint
+    }
+    HD double face_position(int i) const
+    {
+        return r0 + dr * i;
+    }
+    HD double face_area(int i) const
+    {
+        auto r = face_position(i);
+        return r * r;
+    }
+    HD double cell_position(int i) const
+    {
+        return r0 + dr * (i + 0.5);
+    }
+    HD double cell_volume(int i) const
+    {
+        auto r0 = face_position(i + 0);
+        auto r1 = face_position(i + 1);
+        return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
+    }
+    HD cons_t source_terms(prim_t p, double rm, double rp) const
+    {
+        return spherical_geometry_source_terms(p, rm, rp);
+    }
+    double r0;
+    double r1;
+    double dr;
+};
+
+// template<class X, class A, class V, class S>
+// struct grid_geometry_t
+// {
+//     array_t<1, X> face_position;
+//     array_t<1, A> face_area;
+//     array_t<1, V> cell_volume;
+//     S geometric_source_terms;
+// };
+
+// template<class X, class A, class V, class S>
+// auto grid_geometry(
+//     array_t<1, X> face_position,
+//     array_t<1, A> face_area,
+//     array_t<1, V> cell_volume,
+//     S geometric_source_terms)
+// {
+//     return grid_geometry_t<X, A, V, S>{
+//         face_position,
+//         face_area,
+//         cell_volume,
+//         geometric_source_terms,
+//     };
+// }
+
+
+
+
 /**
  * 
  */
@@ -445,15 +514,15 @@ auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
 
 
 template<class G>
-static State next_pcm(const State& state, const G& geom, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
-    auto rf = geom.face_position;
-    auto da = geom.face_area;
-    auto dv = geom.cell_volume;
-    auto st = geom.geometric_source_terms;
-    auto ic = range(dv.space());
-    auto iv = range(rf.space());
+    auto g = G(config);
+    auto ic = range(u.space());
+    auto iv = range(u.space().nudge(vec(0), vec(1)));
+    auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
+    auto da = iv.map([g] HD (int i) { return g.face_area(i); });
+    auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
     auto interior_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(1);
 
@@ -470,7 +539,7 @@ static State next_pcm(const State& state, const G& geom, const Config& config, p
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([rf, da, dv, st, fhat, p] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, dv, g, fhat, p] HD (int i)
     {
         auto rm = rf[i + 0];
         auto rp = rf[i + 1];
@@ -478,7 +547,7 @@ static State next_pcm(const State& state, const G& geom, const Config& config, p
         auto ap = da[i + 1];
         auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
-        auto udot = st(p[i], rm, rp);
+        auto udot = g.source_terms(p[i], rm, rp);
         return (fm * am - fp * ap + udot) / dv[i];
     }) * dt;
 
@@ -487,22 +556,21 @@ static State next_pcm(const State& state, const G& geom, const Config& config, p
         state.iter + 1.0,
         set_bc(u.add(du), config, 1),
     };
-    return state;
 }
 
 
 
 
 template<class G>
-static State next_plm(const State& state, const G& geom, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto u = state.cons;
-    auto rf = geom.face_position;
-    auto da = geom.face_area;
-    auto dv = geom.cell_volume;
-    auto st = geom.geometric_source_terms;
-    auto ic = range(dv.space());
-    auto iv = range(rf.space());
+    auto g = G(config);
+    auto ic = range(u.space());
+    auto iv = range(u.space().nudge(vec(0), vec(1)));
+    auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
+    auto da = iv.map([g] HD (int i) { return g.face_area(i); });
+    auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
     auto gradient_cells = ic.space().contract(1);
     auto interior_cells = ic.space().contract(2);
     auto interior_faces = iv.space().contract(2);
@@ -535,7 +603,7 @@ static State next_plm(const State& state, const G& geom, const Config& config, p
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([rf, da, dv, st, fhat, p] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, dv, g, fhat, p] HD (int i)
     {
         auto rm = rf[i + 0];
         auto rp = rf[i + 1];
@@ -543,7 +611,7 @@ static State next_plm(const State& state, const G& geom, const Config& config, p
         auto ap = da[i + 1];
         auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
-        auto udot = st(p[i], rm, rp);
+        auto udot = g.source_terms(p[i], rm, rp);
         return (fm * am - fp * ap + udot) / dv[i];
     }) * dt;
 
@@ -558,10 +626,10 @@ static State next_plm(const State& state, const G& geom, const Config& config, p
 
 
 template<class Geometry>
-static void update_state(State& state, const Geometry& geom, const Config& config)
+static void update_state(State& state, const Config& config)
 {
     static prim_array_t p;
-    auto next = std::function<State(State&, const Geometry&, const Config&, prim_array_t&, double, int)>();
+    auto next = std::function<State(State&, const Config&, prim_array_t&, double, int)>();
 
     if (config.method == "pcm") {
         next = next_pcm<Geometry>;
@@ -590,19 +658,19 @@ static void update_state(State& state, const Geometry& geom, const Config& confi
     switch (config.rk)
     {
         case 1: {
-            state = next(s0, geom, config, p, dt, 1);
+            state = next(s0, config, p, dt, 1);
             break;
         }
         case 2: {
-            auto s1 = average(s0, next(s0, geom, config, p, dt, 1), 1./1);
-            auto s2 = average(s0, next(s1, geom, config, p, dt, 1), 1./2);
+            auto s1 = average(s0, next(s0, config, p, dt, 1), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./2);
             state = s2;
             break;
         }
         case 3: {
-            auto s1 = average(s0, next(s0, geom, config, p, dt, 1), 1./1);
-            auto s2 = average(s0, next(s1, geom, config, p, dt, 1), 1./4);
-            auto s3 = average(s0, next(s2, geom, config, p, dt, 1), 2./3);
+            auto s1 = average(s0, next(s0, config, p, dt, 1), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./4);
+            auto s3 = average(s0, next(s2, config, p, dt, 1), 2./3);
             state = s3;
             break;
         }
@@ -623,16 +691,16 @@ static auto cell_coordinates(const Config& config)
     return xc;
 }
 
-static auto face_coordinates(const Config& config)
-{
-    auto x0 = config.domain[0];
-    auto x1 = config.domain[1];
-    auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
-    auto dx = (x1 - x0) / ni;
-    auto ic = range(ni + 1);
-    auto xc = ic * dx + x0;
-    return xc;
-}
+// static auto face_coordinates(const Config& config)
+// {
+//     auto x0 = config.domain[0];
+//     auto x1 = config.domain[1];
+//     auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
+//     auto dx = (x1 - x0) / ni;
+//     auto ic = range(ni + 1);
+//     auto xc = ic * dx + x0;
+//     return xc;
+// }
 
 
 
@@ -756,12 +824,10 @@ public:
             case Setup::shell: {
                 auto rho_out = 1.0;
                 auto p_out = rho_out * 1e-6;
-
                 auto r_in = 1.0;
                 auto rho_in = rho_out * (1. + shell_f * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.));
                 auto u_in = shell_u * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
                 auto p_in = rho_in * shell_e * (gamma_law - 1.);
-
                 if (x < r_in) {
                     return vec(rho_in, u_in, p_in);
                 } else {
@@ -786,33 +852,11 @@ public:
     }
     void update_planar(State& state) const
     {
-        auto xc = cell_coordinates(config);
-        auto xf = face_coordinates(config);
-        auto ic = range(xc.space());
-        auto da = xf.map([] HD (double) -> double { return 1.0; });
-        auto dv = ic.map([xf] HD (int i) -> double { return xf[i + 1] - xf[i]; });
-        auto st = [] HD (prim_t p, double rm, double rp) -> cons_t { return cons_t{}; };
-        auto geom = grid_geometry(xf, da, dv, st);
-        update_state(state, geom, config);
+        update_state<planar_geometry_t>(state, config);
     }
     void update_spherical(State& state) const
     {
-        auto rc = cell_coordinates(config);
-        auto rf = face_coordinates(config);
-        auto ic = range(rc.space());
-        auto da = rf.map([] HD (double r) -> double { return r * r; });
-        auto dv = ic.map([rf] HD (int i) -> double
-        {
-            auto x0 = rf[i + 0];
-            auto r1 = rf[i + 1];
-            return (r1 * r1 * r1 - x0 * x0 * x0) / 3.0;
-        });
-        auto st = [] HD (prim_t p, double rm, double rp) -> cons_t
-        {
-            return spherical_geometry_source_terms(p, rm, rp);
-        };
-        auto geom = grid_geometry(rf, da, dv, st);
-        update_state(state, geom, config);
+        update_state<spherical_geometry_t>(state, config);
     }
     bool should_continue(const State& state) const override
     {
