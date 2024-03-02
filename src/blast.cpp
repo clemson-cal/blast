@@ -132,8 +132,6 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 
         if (n == newton_iter_max)
         {
-            // WARNING: none values are silently unwrapped in the code below,
-            // because the cache_unwrap facility in vapor is currently broken.
             return none<prim_t>();
         }
         if (fabs(f) < error_tolerance)
@@ -267,6 +265,7 @@ enum class Setup
     bmk,
     bomb,
     shell,
+    wall,
 };
 static Setup setup_from_string(const std::string& name)
 {
@@ -315,6 +314,8 @@ struct Config
     double shell_f = 100.0;
     double shell_delta = 0.1;
     float dx = 1e-2;
+    vec_t<float, 3> sod_l = {{1.0, 0.0, 1.000}};
+    vec_t<float, 3> sod_r = {{0.1, 0.0, 0.125}};
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<char, 2> bc = {{'f', 'f'}};
     std::vector<uint> sp = {0, 1, 2, 3};
@@ -340,6 +341,8 @@ VISITABLE_STRUCT(Config,
     shell_u,
     shell_f,
     shell_delta,
+    sod_l,
+    sod_r,
     domain,
     bc,
     sp,
@@ -670,10 +673,10 @@ public:
     void initial_state(State& state) const override
     {
         auto setup = setup_from_string(config.setup);
-        auto x0 = config.domain[0];
-        auto x1 = config.domain[1];
         auto bmk_gamma_shock = config.bmk_gamma_shock;
         auto bomb_energy = config.bomb_energy;
+        auto sod_l = cast<double>(config.sod_l);
+        auto sod_r = cast<double>(config.sod_r);
         auto bomb_rho_out = config.bomb_rho_out;
         auto shell_u = config.shell_u;
         auto shell_f = config.shell_f;
@@ -688,18 +691,18 @@ public:
                     return vec(1.0, 0.0, 1.0);
                 }
             case Setup::sod: {
-                    // Standard Sod shocktube (easy problem)
+                    // Sod shocktube -- or any Riemann problem using sod_l / sod_r
                     //
-                    if (x < x0 + 0.5 * (x1 - x0)) {
-                        return vec(1.0, 0.0, 1.0);
+                    if (x < 0.5) { // x0 + 0.5 * (x1 - x0)) {
+                        return sod_l;
                     } else {
-                        return vec(0.1, 0.0, 0.125);
+                        return sod_r;
                     }
                 }
             case Setup::mm96p1: {
                     // Problem 1 from Marti & Muller 1996
                     //
-                    if (x < x0 + 0.5 * (x1 - x0)) {
+                    if (x < 0.5) {
                         return vec(10.0, 0.0, 13.33);
                     } else {
                         return vec(1.0, 0.0, 1e-8);
