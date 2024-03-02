@@ -336,7 +336,8 @@ struct planar_geometry_t
     {
         x0 = config.domain[0];
         x1 = config.domain[1];
-        dx = (x1 - x0) / int((x1 - x0) / config.dx); // config.dx is essentially a hint
+        ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
+        dx = (x1 - x0) / ni;
     }
     HD double face_position(int i) const
     {
@@ -358,9 +359,14 @@ struct planar_geometry_t
     {
         return {};
     }
+    HD index_space_t<1> cells_space() const
+    {
+        return range(ni).space();
+    }
     double x0;
     double x1;
     double dx;
+    int ni;
 };
 
 struct spherical_geometry_t
@@ -369,7 +375,8 @@ struct spherical_geometry_t
     {
         r0 = config.domain[0];
         r1 = config.domain[1];
-        dr = (r1 - r0) / int((r1 - r0) / config.dx); // config.dx is essentially a hint
+        ni = int((r1 - r0) / config.dx); // config.dx is essentially a hint
+        dr = (r1 - r0) / ni;
     }
     HD double face_position(int i) const
     {
@@ -394,34 +401,69 @@ struct spherical_geometry_t
     {
         return spherical_geometry_source_terms(p, rm, rp);
     }
+    HD index_space_t<1> cells_space() const
+    {
+        return range(ni).space();
+    }
     double r0;
     double r1;
     double dr;
+    int ni;
 };
 
-// template<class X, class A, class V, class S>
-// struct grid_geometry_t
-// {
-//     array_t<1, X> face_position;
-//     array_t<1, A> face_area;
-//     array_t<1, V> cell_volume;
-//     S geometric_source_terms;
-// };
-
-// template<class X, class A, class V, class S>
-// auto grid_geometry(
-//     array_t<1, X> face_position,
-//     array_t<1, A> face_area,
-//     array_t<1, V> cell_volume,
-//     S geometric_source_terms)
-// {
-//     return grid_geometry_t<X, A, V, S>{
-//         face_position,
-//         face_area,
-//         cell_volume,
-//         geometric_source_terms,
-//     };
-// }
+struct grid_geometry_t
+{
+    grid_geometry_t(const Config& config)
+    : coords(coords_from_string(config.coords))
+    , planar(config)
+    , spherical(config) {
+    }
+    HD double face_position(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.face_position(i);
+        case CoordinateSystem::spherical: return spherical.face_position(i);
+        }
+    }
+    HD double face_area(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.face_area(i);
+        case CoordinateSystem::spherical: return spherical.face_area(i);
+        }
+    }
+    HD double cell_position(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.cell_position(i);
+        case CoordinateSystem::spherical: return spherical.cell_position(i);
+        }
+    }
+    HD double cell_volume(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.cell_volume(i);
+        case CoordinateSystem::spherical: return spherical.cell_volume(i);
+        }
+    }
+    HD cons_t source_terms(prim_t p, double rm, double rp) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.source_terms(p, rm, rp);
+        case CoordinateSystem::spherical: return spherical.source_terms(p, rm, rp);
+        }
+    }
+    HD index_space_t<1> cells_space() const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.cells_space();
+        case CoordinateSystem::spherical: return spherical.cells_space();
+        }
+    }
+    CoordinateSystem coords;
+    planar_geometry_t planar;
+    spherical_geometry_t spherical;
+};
 
 
 
@@ -452,7 +494,8 @@ static State average(const State& a, const State& b, double x)
 
 
 
-static void update_prim(const State& state, prim_array_t& p)
+template<typename G>
+void update_prim(const State& state, G g, prim_array_t& p)
 {
     auto u = state.cons;
 
@@ -460,14 +503,14 @@ static void update_prim(const State& state, prim_array_t& p)
     {
         p = zeros<prim_t>(u.space()).cache();
     }
-    p = range(u.shape()[0]).map([p, u] HD (int i)
+    p = range(u.shape()[0]).map([p, u, g] HD (int i)
     {
-        auto ui = u[i];
+        auto dv = g.cell_volume(i);
+        auto ui = u[i] / dv;
         auto pi = p[i];
         return cons_to_prim(ui, pi[2]).get();
     }).cache();
 }
-
 
 
 
@@ -527,7 +570,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto interior_faces = iv.space().contract(1);
 
     if (prim_dirty) {
-        update_prim(state, p);
+        update_prim(state, g, p);
     }
 
     auto fhat = iv[interior_faces].map([p, u] HD (int i)
@@ -577,7 +620,7 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
     auto plm_theta = config.theta;
 
     if (prim_dirty) {
-        update_prim(state, p);
+        update_prim(state, g, p);
     }
 
     auto grad = ic[gradient_cells].map([p, plm_theta] HD (int i)
@@ -677,30 +720,6 @@ static void update_state(State& state, const Config& config)
     }
 }
 
-
-
-
-static auto cell_coordinates(const Config& config)
-{
-    auto x0 = config.domain[0];
-    auto x1 = config.domain[1];
-    auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
-    auto dx = (x1 - x0) / ni;
-    auto ic = range(ni);
-    auto xc = (ic + 0.5) * dx + x0;
-    return xc;
-}
-
-// static auto face_coordinates(const Config& config)
-// {
-//     auto x0 = config.domain[0];
-//     auto x1 = config.domain[1];
-//     auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
-//     auto dx = (x1 - x0) / ni;
-//     auto ic = range(ni + 1);
-//     auto xc = ic * dx + x0;
-//     return xc;
-// }
 
 
 
@@ -837,26 +856,28 @@ public:
             default: return {};
             }
         };
-        auto initial_conserved = [=] HD (double x) { return prim_to_cons(initial_primitive(x)); };
+        auto g = grid_geometry_t(config);
+        auto ic = range(g.cells_space());
+        auto u = ic.map([=] (int i) {
+            auto x = g.cell_position(i);
+            auto v = g.cell_volume(i);
+            auto p = initial_primitive(x);
+            auto u = prim_to_cons(p);
+            return u * v;
+        });
         state.time = 0.0;
         state.iter = 0.0;
-        state.cons = cell_coordinates(config).map(initial_conserved).cache();
+        state.cons = u.cache();
     }
     void update(State& state) const override
     {
         switch (coords_from_string(config.coords))
         {
-        case CoordinateSystem::planar: return update_planar(state);
-        case CoordinateSystem::spherical: return update_spherical(state);
+        case CoordinateSystem::planar:
+            return update_state<planar_geometry_t>(state, config);
+        case CoordinateSystem::spherical:
+            return update_state<spherical_geometry_t>(state, config);
         }
-    }
-    void update_planar(State& state) const
-    {
-        update_state<planar_geometry_t>(state, config);
-    }
-    void update_spherical(State& state) const
-    {
-        update_state<spherical_geometry_t>(state, config);
     }
     bool should_continue(const State& state) const override
     {
@@ -899,11 +920,13 @@ public:
                 return cons_to_prim(u).get()[n];
             };
         };
+        auto g = grid_geometry_t(config);
+        auto xc = range(g.cells_space()).map([g] HD (int i) { return g.cell_position(i); });
         switch (column) {
         case 0: return state.cons.map(cons_field(0)).cache();
         case 1: return state.cons.map(cons_field(1)).cache();
         case 2: return state.cons.map(cons_field(2)).cache();
-        case 3: return cell_coordinates(config).cache();
+        case 3: return xc.cache();
         }
         return {};
     }
