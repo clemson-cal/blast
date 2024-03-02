@@ -265,7 +265,6 @@ enum class Setup
     bmk,
     bomb,
     shell,
-    wall,
 };
 static Setup setup_from_string(const std::string& name)
 {
@@ -310,8 +309,9 @@ struct Config
     double bmk_gamma_shock = 5.0;
     double bomb_energy = 1.0E6;
     double bomb_rho_out = 1.0;
-    double shell_u = 25.0;
-    double shell_f = 100.0;
+    double shell_u = 25.0;  // ejecta gamma-beta
+    double shell_e = 1e-1;  // ejecta specific internal energy
+    double shell_f = 100.0; // ejecta-to-ambient-medium comoving density ratio
     double shell_delta = 0.1;
     float dx = 1e-2;
     vec_t<float, 3> sod_l = {{1.0, 0.0, 1.000}};
@@ -339,6 +339,7 @@ VISITABLE_STRUCT(Config,
     bomb_energy,
     bomb_rho_out,
     shell_u,
+    shell_e,
     shell_f,
     shell_delta,
     sod_l,
@@ -679,6 +680,7 @@ public:
         auto sod_r = cast<double>(config.sod_r);
         auto bomb_rho_out = config.bomb_rho_out;
         auto shell_u = config.shell_u;
+        auto shell_e = config.shell_e;
         auto shell_f = config.shell_f;
         auto shell_delta = config.shell_delta;
         auto initial_primitive = [=] HD (double x) -> prim_t
@@ -756,9 +758,9 @@ public:
                 auto p_out = rho_out * 1e-6;
 
                 auto r_in = 1.0;
-                auto rho_in = shell_f * rho_out * exp(-pow(x-r_in, 2.0) / (pow(shell_delta, 2.0)) / 2.0);
-                auto u_in = shell_u * exp(-pow(x-r_in, 2.0) / (pow(shell_delta, 2.0)) / 2.0);
-                auto p_in = rho_in * 1e-1;
+                auto rho_in = rho_out * (1. + shell_f * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.));
+                auto u_in = shell_u * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
+                auto p_in = rho_in * shell_e * (gamma_law - 1.);
 
                 if (x < r_in) {
                     return vec(rho_in, u_in, p_in);
