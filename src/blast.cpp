@@ -503,7 +503,7 @@ void update_prim(const State& state, G g, prim_array_t& p)
     {
         p = zeros<prim_t>(u.space()).cache();
     }
-    p = range(u.shape()[0]).map([p, u, g] HD (int i)
+    p = range(u.space()).map([p, u, g] HD (int i)
     {
         auto dv = g.cell_volume(i);
         auto ui = u[i] / dv;
@@ -565,7 +565,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto iv = range(u.space().nudge(vec(0), vec(1)));
     auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
     auto da = iv.map([g] HD (int i) { return g.face_area(i); });
-    auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
+    auto dv = iv.map([g] HD (int i) { return g.cell_volume(i); });
     auto interior_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(1);
 
@@ -573,16 +573,16 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         update_prim(state, g, p);
     }
 
-    auto fhat = iv[interior_faces].map([p, u] HD (int i)
+    auto fhat = iv[interior_faces].map([p, u, dv] HD (int i)
     {
-        auto ul = u[i - 1];
-        auto ur = u[i];
+        auto ul = u[i - 1] / dv[i];
+        auto ur = u[i + 0] / dv[i];
         auto pl = p[i - 1];
-        auto pr = p[i];
+        auto pr = p[i + 0];
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([rf, da, dv, g, fhat, p] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, g, fhat, p] HD (int i)
     {
         auto rm = rf[i + 0];
         auto rp = rf[i + 1];
@@ -591,7 +591,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
         auto udot = g.source_terms(p[i], rm, rp);
-        return (fm * am - fp * ap + udot) / dv[i];
+        return fm * am - fp * ap + udot;
     }) * dt;
 
     return State{
@@ -613,7 +613,6 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
     auto iv = range(u.space().nudge(vec(0), vec(1)));
     auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
     auto da = iv.map([g] HD (int i) { return g.face_area(i); });
-    auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
     auto gradient_cells = ic.space().contract(1);
     auto interior_cells = ic.space().contract(2);
     auto interior_faces = iv.space().contract(2);
@@ -646,7 +645,7 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur);
     }).cache();
 
-    auto du = ic[interior_cells].map([rf, da, dv, g, fhat, p] HD (int i)
+    auto du = ic[interior_cells].map([rf, da, g, fhat, p] HD (int i)
     {
         auto rm = rf[i + 0];
         auto rp = rf[i + 1];
@@ -655,7 +654,7 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         auto fm = fhat[i + 0];
         auto fp = fhat[i + 1];
         auto udot = g.source_terms(p[i], rm, rp);
-        return (fm * am - fp * ap + udot) / dv[i];
+        return fm * am - fp * ap + udot;
     }) * dt;
 
     return State{
@@ -719,7 +718,6 @@ static void update_state(State& state, const Config& config)
         }
     }
 }
-
 
 
 
@@ -859,11 +857,11 @@ public:
         auto g = grid_geometry_t(config);
         auto ic = range(g.cells_space());
         auto u = ic.map([=] (int i) {
-            auto x = g.cell_position(i);
-            auto v = g.cell_volume(i);
-            auto p = initial_primitive(x);
+            auto xc = g.cell_position(i);
+            auto dv = g.cell_volume(i);
+            auto p = initial_primitive(xc);
             auto u = prim_to_cons(p);
-            return u * v;
+            return u * dv;
         });
         state.time = 0.0;
         state.iter = 0.0;
@@ -915,17 +913,19 @@ public:
     }
     Product compute_product(const State& state, uint column) const override
     {
+        auto g = grid_geometry_t(config);
+        auto ic = range(g.cells_space());
+        auto xc = ic.map([g] HD (int i) { return g.cell_position(i); });
+        auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
         auto cons_field = [] (uint n) {
             return [n] HD (cons_t u) {
                 return cons_to_prim(u).get()[n];
             };
         };
-        auto g = grid_geometry_t(config);
-        auto xc = range(g.cells_space()).map([g] HD (int i) { return g.cell_position(i); });
         switch (column) {
-        case 0: return state.cons.map(cons_field(0)).cache();
-        case 1: return state.cons.map(cons_field(1)).cache();
-        case 2: return state.cons.map(cons_field(2)).cache();
+        case 0: return (state.cons / dv).map(cons_field(0)).cache();
+        case 1: return (state.cons / dv).map(cons_field(1)).cache();
+        case 2: return (state.cons / dv).map(cons_field(2)).cache();
         case 3: return xc.cache();
         }
         return {};
