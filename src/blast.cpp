@@ -948,6 +948,7 @@ public:
         case 2: return "gas_pressure";
         case 3: return "cell_coordinate";
         case 4: return "cell_velocity";
+        case 5: return "cell_lorentz_factor";
         }
         return nullptr;
     }
@@ -969,6 +970,7 @@ public:
         case 2: return (state.cons / dv).map(cons_field(2)).cache();
         case 3: return xc.cache();
         case 4: return vc.cache();
+        case 5: return vc.map([] HD (double v) { return 1.0 / sqrt(1.0 - v * v); }).cache();
         }
         return {};
     }
@@ -1158,7 +1160,7 @@ public:
         static bool show_style = false;
         static bool auto_step = false;
         static bool draw_markers = true;
-        static bool velocity_coords = false;
+        static int x_axis_item = 0;
 
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -1201,21 +1203,21 @@ public:
         }
 
         ImGui::SameLine();
-        ImGui::Checkbox("Velocity on x axis", &velocity_coords);
+        ImGui::Combo("X Axis", &x_axis_item, "Radius\0Cell Velocity\0Cell Lorentz Factor\0\0");
 
         if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
         {
             auto x_key = std::string();
 
-            if (velocity_coords) {
-                x_key = "cell_velocity";
-            } else {
-                x_key = "cell_coordinate";
+            switch (x_axis_item) {
+            case 0: x_key = "cell_coordinate"; break;
+            case 1: x_key = "cell_velocity"; break;
+            case 2: x_key = "cell_lorentz_factor"; break;
             }
             auto x = status.products.at(x_key);
 
             for (const auto& [name, y] : status.products) {
-                if (name != "cell_coordinate" && name != "cell_velocity") {
+                if (name != "cell_coordinate" && name != "cell_velocity" && name != "cell_lorentz_factor") {
                     if (draw_markers) {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
                         ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
