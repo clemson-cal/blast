@@ -947,6 +947,7 @@ public:
         case 1: return "gamma_beta";
         case 2: return "gas_pressure";
         case 3: return "cell_coordinate";
+        case 4: return "cell_velocity";
         }
         return nullptr;
     }
@@ -955,6 +956,7 @@ public:
         auto g = grid_geometry_t(config, state.time);
         auto ic = range(g.cells_space());
         auto xc = ic.map([g] HD (int i) { return g.cell_position(i); });
+        auto vc = ic.map([g] HD (int i) { return g.face_velocity(i); });
         auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
         auto cons_field = [] (uint n) {
             return [n] HD (cons_t u) {
@@ -966,6 +968,7 @@ public:
         case 1: return (state.cons / dv).map(cons_field(1)).cache();
         case 2: return (state.cons / dv).map(cons_field(2)).cache();
         case 3: return xc.cache();
+        case 4: return vc.cache();
         }
         return {};
     }
@@ -1155,6 +1158,7 @@ public:
         static bool show_style = false;
         static bool auto_step = false;
         static bool draw_markers = true;
+        static bool velocity_coords = false;
 
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -1191,20 +1195,27 @@ public:
         ImGui::SameLine();
         ImGui::Text("%s", status.message.data);
 
+        ImGui::SameLine();
         if (ImGui::Button("Style")) {
             show_style = true;
         }
 
+        ImGui::SameLine();
+        ImGui::Checkbox("Velocity on x axis", &velocity_coords);
+
         if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
         {
-            auto x = status.products.at("cell_coordinate");
-            if (true) {
-                auto x0 = min(x);
-                auto x1 = max(x);
-                x = ((x - x0) / (x1 - x0)).cache();
+            auto x_key = std::string();
+
+            if (velocity_coords) {
+                x_key = "cell_velocity";
+            } else {
+                x_key = "cell_coordinate";
             }
+            auto x = status.products.at(x_key);
+
             for (const auto& [name, y] : status.products) {
-                if (name != "cell_coordinate") {
+                if (name != "cell_coordinate" && name != "cell_velocity") {
                     if (draw_markers) {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
                         ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
