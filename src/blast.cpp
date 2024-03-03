@@ -881,7 +881,7 @@ public:
                 auto rho_out = 1.0;
                 auto p_out = rho_out * 1e-6;
                 auto r_in = 1.0;
-                auto rho_in = rho_out * (1. + shell_f * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.));
+                auto rho_in = rho_out * shell_f * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
                 auto u_in = shell_u * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
                 auto p_in = rho_in * shell_e * (gamma_law - 1.);
                 if (x < r_in) {
@@ -1198,7 +1198,11 @@ public:
         if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
         {
             auto x = status.products.at("cell_coordinate");
-
+            if (true) {
+                auto x0 = min(x);
+                auto x1 = max(x);
+                x = ((x - x0) / (x1 - x0)).cache();
+            }
             for (const auto& [name, y] : status.products) {
                 if (name != "cell_coordinate") {
                     if (draw_markers) {
