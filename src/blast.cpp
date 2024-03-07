@@ -376,7 +376,7 @@ struct planar_geometry_t
     {
         return {};
     }
-    HD index_space_t<1> cells_space() const
+    index_space_t<1> cells_space() const
     {
         return range(ni).space();
     }
@@ -428,7 +428,8 @@ struct spherical_geometry_t
     {
         return spherical_geometry_source_terms(p, rm, rp);
     }
-    HD index_space_t<1> cells_space() const
+    index_space_t<1> cells_space() const
+
     {
         return range(ni).space();
     }
@@ -454,6 +455,7 @@ struct grid_geometry_t
         case CoordinateSystem::planar: return planar.face_position(i);
         case CoordinateSystem::spherical: return spherical.face_position(i);
         }
+        return 0.0;
     }
     HD double face_area(int i) const
     {
@@ -461,6 +463,7 @@ struct grid_geometry_t
         case CoordinateSystem::planar: return planar.face_area(i);
         case CoordinateSystem::spherical: return spherical.face_area(i);
         }
+        return 0.0;
     }
     HD double face_velocity(int i) const
     {
@@ -468,6 +471,7 @@ struct grid_geometry_t
         case CoordinateSystem::planar: return planar.face_velocity(i);
         case CoordinateSystem::spherical: return spherical.face_velocity(i);
         }
+        return 0.0;
     }
     HD double cell_position(int i) const
     {
@@ -475,6 +479,7 @@ struct grid_geometry_t
         case CoordinateSystem::planar: return planar.cell_position(i);
         case CoordinateSystem::spherical: return spherical.cell_position(i);
         }
+        return 0.0;
     }
     HD double cell_volume(int i) const
     {
@@ -482,6 +487,7 @@ struct grid_geometry_t
         case CoordinateSystem::planar: return planar.cell_volume(i);
         case CoordinateSystem::spherical: return spherical.cell_volume(i);
         }
+        return 0.0;
     }
     HD cons_t source_terms(prim_t p, double rm, double rp) const
     {
@@ -489,13 +495,15 @@ struct grid_geometry_t
         case CoordinateSystem::planar: return planar.source_terms(p, rm, rp);
         case CoordinateSystem::spherical: return spherical.source_terms(p, rm, rp);
         }
+        return {};
     }
-    HD index_space_t<1> cells_space() const
+    index_space_t<1> cells_space() const
     {
         switch (coords) {
         case CoordinateSystem::planar: return planar.cells_space();
         case CoordinateSystem::spherical: return spherical.cells_space();
         }
+        return {};
     }
     CoordinateSystem coords;
     planar_geometry_t planar;
@@ -895,7 +903,7 @@ public:
         };
         auto g = grid_geometry_t(config, 0.0);
         auto ic = range(g.cells_space());
-        auto u = ic.map([=] (int i) {
+        auto u = ic.map([=] HD (int i) {
             auto xc = g.cell_position(i);
             auto dv = g.cell_volume(i);
             auto p = initial_primitive(xc);
