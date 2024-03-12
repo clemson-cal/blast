@@ -740,7 +740,8 @@ static void update_state(State& state, const Config& config)
     // };
     // update_prim(state, p);
 
-    auto dx = config.dx;
+    auto g = Geometry(config, state.time);
+    auto dx = g.face_position(1) - g.face_position(0);
     auto dt = dx * config.cfl;
     auto s0 = state;
 
