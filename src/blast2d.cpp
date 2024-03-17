@@ -402,6 +402,91 @@ struct planar_geometry_t
 
 
 
+struct log_spherical_geometry
+{
+    log_spherical_geometry(const Config& config, double t)
+    {
+        r0 = 1.0;
+        r1 = config.domain;
+        q0 = 0.0;
+        q1 = M_PI;
+        ni = int((log(r1) - log(r0)) / config.dx);
+        nj = int((q1 - q0) / config.dx);
+        dlogr = (log(r1) - log(r0)) / ni;
+        dq = (q1 - q0) / nj;
+    }
+    HD double face_position_i(int i) const
+    {
+        return r0 * exp(dlogr * i);
+    }
+    HD double face_position_j(int j) const
+    {
+        return q0 + dq * j;
+    }
+    HD double face_area_i(ivec_t<2> index) const
+    {
+        auto rm = face_position_i(index[0]);
+        auto qm = face_position_j(index[1]);
+        auto qp = face_position_j(index[1] + 1);
+        return area(vec(rm, rm), vec(qm, qp));
+    }
+    HD double face_area_j(ivec_t<2> index) const
+    {
+        auto rm = face_position_i(index[0]);
+        auto rp = face_position_i(index[0] + 1);
+        auto qm = face_position_j(index[1]);
+        return area(vec(rm, rp), vec(qm, qm));
+    }
+    HD dvec_t<2> cell_position(ivec_t<2> index) const
+    {
+        auto r = 0.5 * (face_position_i(index[0]) + face_position_i(index[0] + 1));
+        auto q = 0.5 * (face_position_j(index[1]) + face_position_j(index[1] + 1));
+        return {r, q};
+    }
+    HD double cell_volume(ivec_t<2> index) const
+    {
+        auto rm = face_position_i(index[0]);
+        auto rp = face_position_i(index[0] + 1);
+        auto qm = face_position_j(index[1]);
+        auto qp = face_position_j(index[1] + 1);
+        return volume(vec(rm, rp), vec(qm, qp));
+    }
+    HD cons_t source_terms(prim_t p, double xm_i, double xp_i, double xm_j, double xp_j) const
+    {
+        return {};
+    }
+    index_space_t<2> cells_space() const
+    {
+        return index_space(ivec(0, 0), uvec(ni, nj));
+    }
+    static HD double area(dvec_t<2> c0, dvec_t<2> c1)
+    {
+        auto s0 = c0[0] * sin(c0[1]);
+        auto s1 = c1[0] * sin(c1[1]);
+        auto z0 = c0[0] * cos(c0[1]);
+        auto z1 = c1[0] * cos(c1[1]);
+        auto ds = s1 - s0;
+        auto dz = z1 - z0;
+        return M_PI * (s0 + s1) * sqrt(ds * ds + dz * dz);
+    }
+    static HD double volume(dvec_t<2> c0, dvec_t<2> c1)
+    {
+        auto dcost = -(cos(c1[1]) - cos(c0[1]));
+        return 2.0 * M_PI * (pow(c1[0], 3) - pow(c0[0], 3)) / 3.0 * dcost;
+    }
+    double r0;
+    double r1;
+    double q0;
+    double q1;
+    double dlogr;
+    double dq;
+    int ni;
+    int nj;
+};
+
+
+
+
 /**
  * 
  */
@@ -445,7 +530,6 @@ void update_prim(const State& state, G g, prim_array_t& p)
         return cons_to_prim(ui, pi[3]).get();
     }).cache();
 }
-
 
 
 
@@ -683,7 +767,8 @@ public:
         auto shell_delta = config.shell_delta;
         auto initial_primitive = [=] HD (dvec_t<2> pos) -> prim_t
         {
-            auto x = pos[1];
+            auto x = pos[0];
+            auto y = pos[1];
 
             switch (setup)
             {
@@ -695,7 +780,7 @@ public:
             case Setup::sod: {
                     // Sod shocktube -- or any Riemann problem using sod_l / sod_r
                     //
-                    if (x < 0.0) {
+                    if (x * x + y * y < 0.05) {
                         return sod_l;
                     } else {
                         return sod_r;
