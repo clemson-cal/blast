@@ -363,11 +363,11 @@ struct planar_geometry_t
     }
     HD double face_area_i(int i) const
     {
-        return 1.0;
+        return dy;
     }
     HD double face_area_j(int j) const
     {
-        return 1.0;
+        return dx;
     }
     HD dvec_t<2> cell_position(ivec_t<2> index) const
     {
@@ -381,7 +381,7 @@ struct planar_geometry_t
         auto dely = (face_position_j(index[1] + 1) - face_position_j(index[1]));
         return delx * dely;
     }
-    HD cons_t source_terms(prim_t p, double rm, double rp) const
+    HD cons_t source_terms(prim_t p, double xm_i, double xp_i, double xm_j, double xp_j) const
     {
         return {};
     }
@@ -453,48 +453,62 @@ void update_prim(const State& state, G g, prim_array_t& p)
 template<class G>
 static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
-    return state;
-    // auto u = state.cons;
-    // auto g = G(config, state.time);
-    // auto ic = range(u.space());
-    // auto iv = range(u.space().nudge(vec(0), vec(1)));
-    // auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
-    // auto vf = iv.map([g] HD (int i) { return g.face_velocity(i); });
-    // auto da = iv.map([g] HD (int i) { return g.face_area(i); });
-    // auto dv = iv.map([g] HD (int i) { return g.cell_volume(i); });
-    // auto interior_cells = ic.space().contract(1);
-    // auto interior_faces = iv.space().contract(1);
+    auto u = state.cons;
+    auto g = G(config, state.time);
+    auto cells_space = g.cells_space();
+    auto faces_space_i = cells_space.nudge(vec(0, 0), vec(1, 0));
+    auto faces_space_j = cells_space.nudge(vec(0, 0), vec(0, 1));
+    auto xf_i = indices(faces_space_i).map([g] HD (ivec_t<2> i) { return g.face_position_i(i[0]); });
+    auto xf_j = indices(faces_space_j).map([g] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
+    auto da_i = indices(faces_space_i).map([g] HD (ivec_t<2> i) { return g.face_area_i(i[0]); });
+    auto da_j = indices(faces_space_j).map([g] HD (ivec_t<2> i) { return g.face_area_j(i[1]); });
+    auto dv = indices(cells_space).map([g] HD (ivec_t<2> i) { return g.cell_volume(i); });
 
-    // if (prim_dirty) {
-    //     update_prim(state, g, p);
-    // }
+    if (prim_dirty) {
+        update_prim(state, g, p);
+    }
 
-    // auto fhat = iv[interior_faces].map([p, u, dv, vf] HD (int i)
-    // {
-    //     auto ul = u[i - 1] / dv[i];
-    //     auto ur = u[i + 0] / dv[i];
-    //     auto pl = p[i - 1];
-    //     auto pr = p[i + 0];
-    //     return riemann_hlle(pl, pr, ul, ur, vf[i]);
-    // }).cache();
+    auto fhat_i = indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
+    {
+        auto ul = u[i + vec(-1, 0)] / dv[i - vec(1, 0)];
+        auto ur = u[i + vec(+0, 0)] / dv[i - vec(0, 0)];
+        auto pl = p[i + vec(-1, 0)];
+        auto pr = p[i + vec(+0, 0)];
+        return riemann_hlle(pl, pr, ul, ur, 0, 0.0);
+    }).cache();
 
-    // auto du = ic[interior_cells].map([rf, da, g, fhat, p] HD (int i)
-    // {
-    //     auto rm = rf[i + 0];
-    //     auto rp = rf[i + 1];
-    //     auto am = da[i + 0];
-    //     auto ap = da[i + 1];
-    //     auto fm = fhat[i + 0];
-    //     auto fp = fhat[i + 1];
-    //     auto udot = g.source_terms(p[i], rm, rp);
-    //     return fm * am - fp * ap + udot;
-    // }) * dt;
+    auto fhat_j = indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
+    {
+        auto ul = u[i + vec(0, -1)] / dv[i - vec(0, 1)];
+        auto ur = u[i + vec(0, +0)] / dv[i - vec(0, 0)];
+        auto pl = p[i + vec(0, -1)];
+        auto pr = p[i + vec(0, +0)];
+        return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
+    }).cache();
 
-    // return State{
-    //     state.time + dt,
-    //     state.iter + 1.0,
-    //     set_bc(u.add(du), config, 1),
-    // };
+    auto du = indices(cells_space.contract(1)).map([=] HD (ivec_t<2> i)
+    {
+        auto rm_i = xf_i[i + vec(0, 0)];
+        auto rp_i = xf_i[i + vec(1, 0)];
+        auto rm_j = xf_j[i + vec(0, 0)];
+        auto rp_j = xf_j[i + vec(0, 1)];
+        auto am_i = da_i[i + vec(0, 0)];
+        auto ap_i = da_i[i + vec(1, 0)];
+        auto am_j = da_j[i + vec(0, 0)];
+        auto ap_j = da_j[i + vec(0, 1)];
+        auto fm_i = fhat_i[i + vec(0, 0)];
+        auto fp_i = fhat_i[i + vec(1, 0)];
+        auto fm_j = fhat_j[i + vec(0, 0)];
+        auto fp_j = fhat_j[i + vec(0, 1)];
+        auto udot = g.source_terms(p[i], rm_i, rp_i, rm_j, rp_j);
+        return fm_i * am_i - fp_i * ap_i + fm_j * am_j - fp_j * ap_j + udot;
+    }) * dt;
+
+    return State{
+        state.time + dt,
+        state.iter + 1.0,
+        u.add(du).cache(),
+    };
 }
 
 
@@ -669,7 +683,7 @@ public:
         auto shell_delta = config.shell_delta;
         auto initial_primitive = [=] HD (dvec_t<2> pos) -> prim_t
         {
-            auto x = pos[0];
+            auto x = pos[1];
 
             switch (setup)
             {
@@ -681,7 +695,7 @@ public:
             case Setup::sod: {
                     // Sod shocktube -- or any Riemann problem using sod_l / sod_r
                     //
-                    if (x < 0.5) { // x0 + 0.5 * (x1 - x0)) {
+                    if (x < 0.0) {
                         return sod_l;
                     } else {
                         return sod_r;
@@ -690,7 +704,7 @@ public:
             case Setup::mm96p1: {
                     // Problem 1 from Marti & Muller 1996
                     //
-                    if (x < 0.5) {
+                    if (x < 0.0) {
                         return vec(10.0, 0.0, 0.0, 13.33);
                     } else {
                         return vec(1.0, 0.0, 0.0, 1e-8);
@@ -805,36 +819,36 @@ public:
     }
     const char* get_product_name(uint column) const override
     {
-        // switch (column) {
-        // case 0: return "comoving_mass_density";
-        // case 1: return "gamma_beta";
-        // case 2: return "gas_pressure";
+        switch (column) {
+        case 0: return "comoving_mass_density";
+        case 1: return "gamma_beta";
+        case 2: return "gas_pressure";
         // case 3: return "cell_coordinate";
         // case 4: return "cell_velocity";
         // case 5: return "cell_lorentz_factor";
-        // }
+        }
         return nullptr;
     }
     Product compute_product(const State& state, uint column) const override
     {
-        // auto g = grid_geometry_t(config, state.time);
-        // auto ic = range(g.cells_space());
-        // auto xc = ic.map([g] HD (int i) { return g.cell_position(i); });
-        // auto vc = ic.map([g] HD (int i) { return g.face_velocity(i); });
-        // auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
-        // auto cons_field = [] (uint n) {
-        //     return [n] HD (cons_t u) {
-        //         return cons_to_prim(u).get()[n];
-        //     };
-        // };
-        // switch (column) {
-        // case 0: return (state.cons / dv).map(cons_field(0)).cache();
-        // case 1: return (state.cons / dv).map(cons_field(1)).cache();
-        // case 2: return (state.cons / dv).map(cons_field(2)).cache();
+        auto g = planar_geometry_t(config, state.time);
+        auto ic = indices(g.cells_space());
+        // auto xc = ic.map([g] HD (ivec_t<2> i) { return g.cell_position(i); });
+        // auto vc = ic.map([g] HD (ivec_t<2> i) { return g.face_velocity(i); });
+        auto dv = ic.map([g] HD (ivec_t<2> i) { return g.cell_volume(i); });
+        auto cons_field = [] (uint n) {
+            return [n] HD (cons_t u) {
+                return cons_to_prim(u).get()[n];
+            };
+        };
+        switch (column) {
+        case 0: return (state.cons / dv).map(cons_field(0)).cache();
+        case 1: return (state.cons / dv).map(cons_field(1)).cache();
+        case 2: return (state.cons / dv).map(cons_field(2)).cache();
         // case 3: return xc.cache();
         // case 4: return vc.cache();
         // case 5: return vc.map([] HD (double v) { return 1.0 / sqrt(1.0 - v * v); }).cache();
-        // }
+        }
         return {};
     }
     std::set<uint> get_timeseries_cols() const override
