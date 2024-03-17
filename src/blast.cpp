@@ -621,8 +621,8 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 
     auto fhat = iv[interior_faces].map([p, u, dv, vf] HD (int i)
     {
-        auto ul = u[i - 1] / dv[i];
-        auto ur = u[i + 0] / dv[i];
+        auto ul = u[i - 1] / dv[i - 1];
+        auto ur = u[i + 0] / dv[i + 0];
         auto pl = p[i - 1];
         auto pr = p[i + 0];
         return riemann_hlle(pl, pr, ul, ur, vf[i]);
