@@ -153,7 +153,7 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 
 HD static auto prim_and_cons_to_flux(prim_t p, cons_t u, int axis) -> cons_t
 {
-    auto pre = p[2];
+    auto pre = p[3];
     auto vn = beta_component(p, axis);
     auto f = cons_t{};
     f[0] = vn * u[0];
