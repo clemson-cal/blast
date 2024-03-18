@@ -349,17 +349,19 @@ struct log_spherical_geometry_t
     }
     HD double face_area_i(ivec_t<2> index) const
     {
+        auto rp = face_position_i(index[0]);
         auto rm = face_position_i(index[0]);
         auto qm = face_position_j(index[1]);
         auto qp = face_position_j(index[1] + 1);
-        return area(vec(rm, rm), vec(qm, qp));
+        return area(vec(rm, qm), vec(rp, qp));
     }
     HD double face_area_j(ivec_t<2> index) const
     {
         auto rm = face_position_i(index[0]);
         auto rp = face_position_i(index[0] + 1);
         auto qm = face_position_j(index[1]);
-        return area(vec(rm, rp), vec(qm, qm));
+        auto qp = face_position_j(index[1]);
+        return area(vec(rm, qm), vec(rp, qp));
     }
     HD dvec_t<2> cell_position(ivec_t<2> index) const
     {
@@ -373,7 +375,8 @@ struct log_spherical_geometry_t
         auto rp = face_position_i(index[0] + 1);
         auto qm = face_position_j(index[1]);
         auto qp = face_position_j(index[1] + 1);
-        return volume(vec(rm, rp), vec(qm, qp));
+        auto dcost = -(cos(qp) - cos(qm));
+        return 2.0 * M_PI * (pow(rp, 3) - pow(rm, 3)) / 3.0 * dcost;
     }
     HD cons_t source_terms(prim_t p, double xm_i, double xp_i, double xm_j, double xp_j) const
     {
@@ -382,14 +385,6 @@ struct log_spherical_geometry_t
     index_space_t<2> cells_space() const
     {
         return index_space(ivec(0, 0), uvec(ni, nj));
-    }
-    index_space_t<1> faces_space_1d_i() const
-    {
-        return index_space(vec(0), uvec(ni + 1));
-    }
-    index_space_t<1> faces_space_1d_j() const
-    {
-        return index_space(vec(0), uvec(nj + 1));
     }
     static HD double area(dvec_t<2> c0, dvec_t<2> c1)
     {
@@ -400,11 +395,6 @@ struct log_spherical_geometry_t
         auto ds = s1 - s0;
         auto dz = z1 - z0;
         return M_PI * (s0 + s1) * sqrt(ds * ds + dz * dz);
-    }
-    static HD double volume(dvec_t<2> c0, dvec_t<2> c1)
-    {
-        auto dcost = -(cos(c1[1]) - cos(c0[1]));
-        return 2.0 * M_PI * (pow(c1[0], 3) - pow(c0[0], 3)) / 3.0 * dcost;
     }
     double r0;
     double r1;
@@ -487,19 +477,19 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 
     auto fhat_i = indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
     {
-        auto ul = u[i + vec(-1, 0)] / dv[i - vec(1, 0)];
-        auto ur = u[i + vec(+0, 0)] / dv[i - vec(0, 0)];
-        auto pl = p[i + vec(-1, 0)];
-        auto pr = p[i + vec(+0, 0)];
+        auto ul = u[i - vec(1, 0)] / dv[i - vec(1, 0)];
+        auto ur = u[i - vec(0, 0)] / dv[i - vec(0, 0)];
+        auto pl = p[i - vec(1, 0)];
+        auto pr = p[i - vec(0, 0)];
         return riemann_hlle(pl, pr, ul, ur, 0, 0.0);
     }).cache();
 
     auto fhat_j = indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
     {
-        auto ul = u[i + vec(0, -1)] / dv[i - vec(0, 1)];
-        auto ur = u[i + vec(0, +0)] / dv[i - vec(0, 0)];
-        auto pl = p[i + vec(0, -1)];
-        auto pr = p[i + vec(0, +0)];
+        auto ul = u[i - vec(0, 1)] / dv[i - vec(0, 1)];
+        auto ur = u[i - vec(0, 0)] / dv[i - vec(0, 0)];
+        auto pl = p[i - vec(0, 1)];
+        auto pr = p[i - vec(0, 0)];
         return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
     }).cache();
 
@@ -832,7 +822,7 @@ public:
     {
         switch (column) {
         case 0: return "comoving_mass_density";
-        case 1: return "gamma_beta";
+        case 1: return "radial_gamma_beta";
         case 2: return "gas_pressure";
         case 3: return "face_positions_i";
         case 4: return "face_positions_j";
@@ -854,7 +844,7 @@ public:
         switch (column) {
         case 0: return (state.cons / dv).map(cons_field(0)).cache();
         case 1: return (state.cons / dv).map(cons_field(1)).cache();
-        case 2: return (state.cons / dv).map(cons_field(2)).cache();
+        case 2: return (state.cons / dv).map(cons_field(3)).cache();
         case 3: return xf_i.cache();
         case 4: return xf_j.cache();
         }
