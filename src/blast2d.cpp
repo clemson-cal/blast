@@ -259,18 +259,6 @@ static Setup setup_from_string(const std::string& name)
     throw std::runtime_error("unknown setup " + name);
 }
 
-enum class CoordinateSystem
-{
-    planar,
-    spherical,
-};
-static CoordinateSystem coords_from_string(const std::string& name)
-{
-    if (name == "planar") return CoordinateSystem::planar;
-    if (name == "spherical") return CoordinateSystem::spherical;
-    throw std::runtime_error("unknown coords " + name);
-}
-
 
 
 
@@ -305,7 +293,6 @@ struct Config
     std::string outdir = ".";
     std::string method = "plm";
     std::string setup = "uniform";
-    // std::string coords = "spherical"; // or planar
 };
 VISITABLE_STRUCT(Config,
     fold,
@@ -334,77 +321,14 @@ VISITABLE_STRUCT(Config,
     outdir,
     method,
     setup
-    // coords
 );
 
 
 
 
-struct planar_geometry_t
+struct log_spherical_geometry_t
 {
-    planar_geometry_t(const Config& config, double t)
-    {
-        x0 = config.domain * -0.5;
-        x1 = config.domain * +0.5;
-        y0 = config.domain * -0.5;
-        y1 = config.domain * +0.5;
-        ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
-        nj = int((y1 - y0) / config.dx);
-        dx = (x1 - x0) / ni;
-        dy = (y1 - y0) / nj;
-    }
-    HD double face_position_i(int i) const
-    {
-        return x0 + dx * i;
-    }
-    HD double face_position_j(int j) const
-    {
-        return y0 + dy * j;
-    }
-    HD double face_area_i(int i) const
-    {
-        return dy;
-    }
-    HD double face_area_j(int j) const
-    {
-        return dx;
-    }
-    HD dvec_t<2> cell_position(ivec_t<2> index) const
-    {
-        auto x = 0.5 * (face_position_i(index[0]) + face_position_i(index[0] + 1));
-        auto y = 0.5 * (face_position_j(index[1]) + face_position_j(index[1] + 1));
-        return {x, y};
-    }
-    HD double cell_volume(ivec_t<2> index) const
-    {
-        auto delx = (face_position_i(index[0] + 1) - face_position_i(index[0]));
-        auto dely = (face_position_j(index[1] + 1) - face_position_j(index[1]));
-        return delx * dely;
-    }
-    HD cons_t source_terms(prim_t p, double xm_i, double xp_i, double xm_j, double xp_j) const
-    {
-        return {};
-    }
-    index_space_t<2> cells_space() const
-    {
-        return index_space(ivec(0, 0), uvec(ni, nj));
-    }
-    double x0;
-    double x1;
-    double y0;
-    double y1;
-    double dx;
-    double dy;
-    int ni;
-    int nj;
-};
-
-
-
-
-struct log_spherical_geometry
-{
-    log_spherical_geometry(const Config& config, double t)
+    log_spherical_geometry_t(const Config& config, double time) : time(time)
     {
         r0 = 1.0;
         r1 = config.domain;
@@ -453,11 +377,19 @@ struct log_spherical_geometry
     }
     HD cons_t source_terms(prim_t p, double xm_i, double xp_i, double xm_j, double xp_j) const
     {
-        return {};
+        return spherical_geometry_source_terms(p, xm_i, xp_i, xm_j, xp_j);
     }
     index_space_t<2> cells_space() const
     {
         return index_space(ivec(0, 0), uvec(ni, nj));
+    }
+    index_space_t<1> faces_space_1d_i() const
+    {
+        return index_space(vec(0), uvec(ni + 1));
+    }
+    index_space_t<1> faces_space_1d_j() const
+    {
+        return index_space(vec(0), uvec(nj + 1));
     }
     static HD double area(dvec_t<2> c0, dvec_t<2> c1)
     {
@@ -480,6 +412,7 @@ struct log_spherical_geometry
     double q1;
     double dlogr;
     double dq;
+    double time;
     int ni;
     int nj;
 };
@@ -544,8 +477,8 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto faces_space_j = cells_space.nudge(vec(0, 0), vec(0, 1));
     auto xf_i = indices(faces_space_i).map([g] HD (ivec_t<2> i) { return g.face_position_i(i[0]); });
     auto xf_j = indices(faces_space_j).map([g] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
-    auto da_i = indices(faces_space_i).map([g] HD (ivec_t<2> i) { return g.face_area_i(i[0]); });
-    auto da_j = indices(faces_space_j).map([g] HD (ivec_t<2> i) { return g.face_area_j(i[1]); });
+    auto da_i = indices(faces_space_i).map([g] HD (ivec_t<2> i) { return g.face_area_i(i); });
+    auto da_j = indices(faces_space_j).map([g] HD (ivec_t<2> i) { return g.face_area_j(i); });
     auto dv = indices(cells_space).map([g] HD (ivec_t<2> i) { return g.cell_volume(i); });
 
     if (prim_dirty) {
@@ -854,7 +787,7 @@ public:
             default: return {};
             }
         };
-        auto g = planar_geometry_t(config, 0.0);
+        auto g = log_spherical_geometry_t(config, 0.0);
         auto ic = indices(g.cells_space());
         auto u = ic.map([=] HD (ivec_t<2> i) {
             auto xc = g.cell_position(i);
@@ -869,14 +802,7 @@ public:
     }
     void update(State& state) const override
     {
-        return update_state<planar_geometry_t>(state, config);
-        // switch (coords_from_string(config.coords))
-        // {
-        // case CoordinateSystem::planar:
-        //     return update_state<planar_geometry_t>(state, config);
-        // case CoordinateSystem::spherical:
-        //     return update_state<spherical_geometry_t>(state, config);
-        // }
+        return update_state<log_spherical_geometry_t>(state, config);
     }
     bool should_continue(const State& state) const override
     {
@@ -908,18 +834,17 @@ public:
         case 0: return "comoving_mass_density";
         case 1: return "gamma_beta";
         case 2: return "gas_pressure";
-        // case 3: return "cell_coordinate";
-        // case 4: return "cell_velocity";
-        // case 5: return "cell_lorentz_factor";
+        case 3: return "face_positions_i";
+        case 4: return "face_positions_j";
         }
         return nullptr;
     }
     Product compute_product(const State& state, uint column) const override
     {
-        auto g = planar_geometry_t(config, state.time);
+        auto g = log_spherical_geometry_t(config, state.time);
         auto ic = indices(g.cells_space());
-        // auto xc = ic.map([g] HD (ivec_t<2> i) { return g.cell_position(i); });
-        // auto vc = ic.map([g] HD (ivec_t<2> i) { return g.face_velocity(i); });
+        auto xf_i = indices(index_space(vec(0, 0), uvec(g.ni + 1, 1))).map([g] HD (ivec_t<2> i) { return g.face_position_i(i[0]); });
+        auto xf_j = indices(index_space(vec(0, 0), uvec(1, g.nj + 1))).map([g] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
         auto dv = ic.map([g] HD (ivec_t<2> i) { return g.cell_volume(i); });
         auto cons_field = [] (uint n) {
             return [n] HD (cons_t u) {
@@ -930,9 +855,8 @@ public:
         case 0: return (state.cons / dv).map(cons_field(0)).cache();
         case 1: return (state.cons / dv).map(cons_field(1)).cache();
         case 2: return (state.cons / dv).map(cons_field(2)).cache();
-        // case 3: return xc.cache();
-        // case 4: return vc.cache();
-        // case 5: return vc.map([] HD (double v) { return 1.0 / sqrt(1.0 - v * v); }).cache();
+        case 3: return xf_i.cache();
+        case 4: return xf_j.cache();
         }
         return {};
     }
