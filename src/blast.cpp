@@ -560,41 +560,51 @@ void update_prim(const State& state, G g, prim_array_t& p)
 
 
 
-template<class F>
-auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
+template<class F, class Geometry>
+void set_bc(array_t<1, F> &u, const Config& config, prim_array_t& p, int ng, const Geometry& geometry)
 {
     auto bcl = config.bc[0];
     auto bcr = config.bc[1];
-    auto il = index_space(ivec(0), uvec(ng));
-    auto ir = index_space(ivec(u.size() - ng), uvec(ng));
+    // auto il = index_space(ivec(0), uvec(ng));
+    // auto ir = index_space(ivec(u.size() - ng), uvec(ng));
 
     if (bcl == 'f' && bcr == 'f')
     {
-        return u.cache();
+        auto pl = p[ng];
+        auto pr = p[p.size() - ng - 1];
+        for (int i = 0; i < ng; ++i)
+        {
+            auto ul = prim_to_cons(pl) * geometry.cell_volume(i);
+            auto ur = prim_to_cons(pr) * geometry.cell_volume(u.size() - i - 1);
+
+            u._set(ivec(i), ul);
+            u._set(ivec(u.size() - i - 1), ur);
+            p._set(ivec(i), pl);
+            p._set(ivec(u.size() - i - 1), pr);
+        }
     }
-    else if (bcl == 'f' && (bcr == 'o' || bcr == 'r'))
-    {
-        auto ur = u[u.size() - ng - 1];
-        if (bcr == 'r') ur[1] *= -1.0;
-        return u.at(ir).set(ur).cache();
-    }
-    else if ((bcl == 'o' || bcl == 'r') && bcr == 'f')
-    {
-        auto ul = u[ng];
-        if (bcl == 'r') ul[1] *= -1.0;
-        return u.at(il).set(ul).cache();
-    }
-    else if ((bcl == 'o' || bcl == 'r') && (bcr == 'o' || bcr == 'r'))
-    {
-        auto ul = u[ng];
-        auto ur = u[u.size() - ng - 1];
-        if (bcl == 'r') ul[1] *= -1.0;
-        if (bcr == 'r') ur[1] *= -1.0;
-        return u.at(il).set(ul).at(ir).set(ur).cache();
-    }
+    // else if (bcl == 'f' && (bcr == 'o' || bcr == 'r'))
+    // {
+    //     auto ur = u[u.size() - ng - 1];
+    //     if (bcr == 'r') ur[1] *= -1.0;
+    //     return u.at(ir).set(ur).cache();
+    // }
+    // else if ((bcl == 'o' || bcl == 'r') && bcr == 'f')
+    // {
+    //     auto ul = u[ng];
+    //     if (bcl == 'r') ul[1] *= -1.0;
+    //     return u.at(il).set(ul).cache();
+    // }
+    // else if ((bcl == 'o' || bcl == 'r') && (bcr == 'o' || bcr == 'r'))
+    // {
+    //     auto ul = u[ng];
+    //     auto ur = u[u.size() - ng - 1];
+    //     if (bcl == 'r') ul[1] *= -1.0;
+    //     if (bcr == 'r') ur[1] *= -1.0;
+    //     return u.at(il).set(ul).at(ir).set(ur).cache();
+    // }
     else
-    {
-        return u.cache();        
+    {        
     }
 }
 
@@ -604,6 +614,8 @@ auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
 template<class G>
 static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
+    grid_geometry_t geometry(config, state.time);
+
     auto u = state.cons;
     auto g = G(config, state.time);
     auto ic = range(u.space());
@@ -640,10 +652,14 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         return fm * am - fp * ap + udot;
     }) * dt;
 
+    u = u.add(du).cache();
+
+    set_bc(u, config, p, 1, geometry);
+
     return State{
         state.time + dt,
         state.iter + 1.0,
-        set_bc(u.add(du), config, 1),
+        u,
     };
 }
 
@@ -653,6 +669,8 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 template<class G>
 static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
+    grid_geometry_t geometry(config, state.time);
+
     auto u = state.cons;
     auto g = G(config, state.time);
     auto ic = range(u.space());
@@ -704,10 +722,14 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         return fm * am - fp * ap + udot;
     }) * dt;
 
+    u = u.add(du).cache();
+
+    set_bc(u, config, p, 2, geometry);
+
     return State{
         state.time + dt,
         state.iter + 1.0,
-        set_bc(u.add(du), config, 2),
+        u,
     };
 }
 

@@ -24,7 +24,7 @@ def main(items: list[str]):
             if prim in h5f:
                 y = h5f[prim][...]
                 ax1.plot(x, y, label=filename.name, color='k')
-                ax1.set_xlim(xi, xo)
+                # ax1.set_xlim(xi, xo)
                 ax1.set_ylim(0.0)
                 plt.show()
             else:
