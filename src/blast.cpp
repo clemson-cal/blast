@@ -25,6 +25,7 @@ SOFTWARE.
 #include <cmath>
 #include <functional>
 #include "vapor/vapor.hpp"
+#include "envelope.hpp"
 
 
 
@@ -246,6 +247,7 @@ enum class Setup
     bmk,
     bomb,
     shell,
+    envelope,
 };
 static Setup setup_from_string(const std::string& name)
 {
@@ -256,6 +258,7 @@ static Setup setup_from_string(const std::string& name)
     if (name == "bmk") return Setup::bmk;
     if (name == "bomb") return Setup::bomb;
     if (name == "shell") return Setup::shell;
+    if (name == "envelope") return Setup::envelope;
     throw std::runtime_error("unknown setup " + name);
 }
 
@@ -282,6 +285,7 @@ struct Config
     int fold = 50;
     int rk = 2;
     double theta = 1.5;
+    double tstart = 0.0;
     double tfinal = 0.0;
     double cfl = 0.4;
     double cpi = 0.0;
@@ -311,6 +315,7 @@ VISITABLE_STRUCT(Config,
     fold,
     rk,
     theta,
+    tstart,
     tfinal,
     cfl,
     cpi,
@@ -807,6 +812,7 @@ public:
     void initial_state(State& state) const override
     {
         auto setup = setup_from_string(config.setup);
+        auto tstart = config.tstart;
         auto bmk_gamma_shock = config.bmk_gamma_shock;
         auto bomb_energy = config.bomb_energy;
         auto sod_l = cast<double>(config.sod_l);
@@ -898,6 +904,16 @@ public:
                 } else {
                     return vec(rho_out, 0.0, p_out);
                 }
+            }
+            case Setup::envelope: {
+                auto envelope = envelope_t();
+                auto r = x;
+                auto t = tstart;
+                auto m = envelope.shell_mass_rt(r, t);
+                auto d = envelope.shell_density_mt(m, t);
+                auto u = envelope.shell_gamma_beta_m(m);
+                auto p = 1e-6 * d;
+                return vec(d, u, p);
             }
             default: return {};
             }

@@ -25,6 +25,7 @@ SOFTWARE.
 #include <cmath>
 #include <functional>
 #include "vapor/vapor.hpp"
+#include "envelope.hpp"
 
 
 
@@ -47,17 +48,17 @@ using Product = memory_backed_array_t<2, double, ref_counted_ptr_t>;
 #define sign(x) copysign(1.0, x)
 #define minabs(a, b, c) min3(fabs(a), fabs(b), fabs(c))
 
-HD static inline double plm_minmod(
-    double yl,
-    double yc,
-    double yr,
-    double plm_theta)
-{
-    double a = (yc - yl) * plm_theta;
-    double b = (yr - yl) * 0.5;
-    double c = (yr - yc) * plm_theta;
-    return 0.25 * fabs(sign(a) + sign(b)) * (sign(a) + sign(c)) * minabs(a, b, c);
-}
+// HD static inline double plm_minmod(
+//     double yl,
+//     double yc,
+//     double yr,
+//     double plm_theta)
+// {
+//     double a = (yc - yl) * plm_theta;
+//     double b = (yr - yl) * 0.5;
+//     double c = (yr - yc) * plm_theta;
+//     return 0.25 * fabs(sign(a) + sign(b)) * (sign(a) + sign(c)) * minabs(a, b, c);
+// }
 
 
 
@@ -240,22 +241,14 @@ HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1, d
 enum class Setup
 {
     uniform,
-    sod,
-    mm96p1,
     wind,
-    bmk,
-    bomb,
-    shell,
+    envelope,
 };
 static Setup setup_from_string(const std::string& name)
 {
     if (name == "uniform") return Setup::uniform;
-    if (name == "sod") return Setup::sod;
-    if (name == "mm96p1") return Setup::mm96p1;
     if (name == "wind") return Setup::wind;
-    if (name == "bmk") return Setup::bmk;
-    if (name == "bomb") return Setup::bomb;
-    if (name == "shell") return Setup::shell;
+    if (name == "envelope") return Setup::envelope;
     throw std::runtime_error("unknown setup " + name);
 }
 
@@ -270,24 +263,15 @@ struct Config
     int fold = 50;
     int rk = 2;
     double theta = 1.5;
+    double tstart = 0.0;
     double tfinal = 0.0;
     double cfl = 0.4;
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
-    double bmk_gamma_shock = 5.0;
-    double bomb_energy = 1.0e6;
-    double bomb_rho_out = 1.0;
-    double shell_u = 25.0;  // ejecta gamma-beta
-    double shell_e = 1e-1;  // ejecta specific internal energy
-    double shell_f = 100.0; // ejecta-to-ambient-medium comoving density ratio
-    double shell_delta = 0.1;
-    vec_t<float, 4> sod_l = {{1.0, 0.0, 0.0, 1.000}};
-    vec_t<float, 4> sod_r = {{0.1, 0.0, 0.0, 0.125}};
-    float dx = 1e-2;
+    double dx = 1e-2;
     double domain = 10.0;
-    // vec_t<float, 2> move = {{0.0, 0.0}}; // speed of mesh endpoints
-    // vec_t<char, 2> bc = {{'f', 'f'}};
+    bool expand = false;
     std::vector<uint> sp;
     std::vector<uint> ts;
     std::string outdir = ".";
@@ -298,24 +282,15 @@ VISITABLE_STRUCT(Config,
     fold,
     rk,
     theta,
+    tstart,
     tfinal,
     cfl,
     cpi,
     spi,
     tsi,
-    bmk_gamma_shock,
-    bomb_energy,
-    bomb_rho_out,
-    shell_u,
-    shell_e,
-    shell_f,
-    shell_delta,
-    sod_l,
-    sod_r,
     dx,
     domain,
-    // move,
-    // bc,
+    expand,
     sp,
     ts,
     outdir,
@@ -484,16 +459,16 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur, 0, 0.0);
     }).cache();
 
-    auto fhat_j = indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
+    auto fhat_j = zeros<cons_t>(faces_space_j).insert(indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
     {
         auto ul = u[i - vec(0, 1)] / dv[i - vec(0, 1)];
         auto ur = u[i - vec(0, 0)] / dv[i - vec(0, 0)];
         auto pl = p[i - vec(0, 1)];
         auto pr = p[i - vec(0, 0)];
         return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
-    }).cache();
+    })).cache();
 
-    auto du = indices(cells_space.contract(1)).map([=] HD (ivec_t<2> i)
+    auto du = indices(cells_space.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
     {
         auto rm_i = xf_i[i + vec(0, 0)];
         auto rp_i = xf_i[i + vec(1, 0)];
@@ -679,19 +654,10 @@ public:
     void initial_state(State& state) const override
     {
         auto setup = setup_from_string(config.setup);
-        auto bmk_gamma_shock = config.bmk_gamma_shock;
-        auto bomb_energy = config.bomb_energy;
-        auto sod_l = cast<double>(config.sod_l);
-        auto sod_r = cast<double>(config.sod_r);
-        auto bomb_rho_out = config.bomb_rho_out;
-        auto shell_u = config.shell_u;
-        auto shell_e = config.shell_e;
-        auto shell_f = config.shell_f;
-        auto shell_delta = config.shell_delta;
+        auto tstart = config.tstart;
         auto initial_primitive = [=] HD (dvec_t<2> pos) -> prim_t
         {
-            auto x = pos[0];
-            auto y = pos[1];
+            auto r = pos[0];
 
             switch (setup)
             {
@@ -700,79 +666,23 @@ public:
                     //
                     return vec(1.0, 0.0, 0.0, 1.0);
                 }
-            case Setup::sod: {
-                    // Sod shocktube -- or any Riemann problem using sod_l / sod_r
-                    //
-                    if (x * x + y * y < 0.05) {
-                        return sod_l;
-                    } else {
-                        return sod_r;
-                    }
-                }
-            case Setup::mm96p1: {
-                    // Problem 1 from Marti & Muller 1996
-                    //
-                    if (x < 0.0) {
-                        return vec(10.0, 0.0, 0.0, 13.33);
-                    } else {
-                        return vec(1.0, 0.0, 0.0, 1e-8);
-                    }
-                }
             case Setup::wind: {
                     // Steady-state cold wind, sub-relativistic velocity
                     //
                     auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
                     auto u = 0.1; // wind gamma-beta
-                    auto rho = f / (x * x * u);
+                    auto rho = f / (r * r * u);
                     auto pre = 1e-10 * pow(rho, gamma_law); // uniform specfic entropy
                     return vec(rho, 0.1, 0.0, pre);
                 }
-            case Setup::bmk: {
-                    // Blandford-Mckee ultra-relativistic blast wave
-                    //
-                    auto shock_radius = 1.0;
-                    auto eta = x / shock_radius;
-                    if (eta < 1.0) {
-                        auto Gamma = bmk_gamma_shock;
-                        auto xi = Gamma * Gamma * (eta - 1.0);
-                        auto f = 0.5 - 8.0 * xi;
-                        auto g = 2.0 * sqrt(2.0) * pow((1.0 - 8.0 * xi), (-5.0 / 4.0));
-                        auto h = (2.0 / 3.0) * pow((1.0 - 8.0 * xi), (-17.0 / 12.0));
-                        auto rho = Gamma * g;
-                        auto vsh = sqrt(1.0 - 1.0 / Gamma / Gamma);
-                        auto vel = vsh * (1.0 - (1.0 / Gamma / Gamma) * f);
-                        auto gb = vel / sqrt(1.0 - vel * vel);
-                        auto pre = Gamma * Gamma * h;
-                        return vec(rho, gb, 0.0, pre);
-                    } else {
-                        return vec(1.0, 0.0, 0.0, 1e-8);
-                    }
-                }
-            case Setup::bomb: {
-                auto r_in = 1.0;
-                auto bomb_mass = 1.0;
-                auto bomb_volume = 4.0 / 3.0 * M_PI * pow(r_in, 3.0);
-                auto bomb_rho_in = bomb_mass / bomb_volume;
-                auto p_in = bomb_energy / bomb_volume * (gamma_law - 1.0);
-                auto p_out = bomb_rho_out * 1e-6;
-                if (x < r_in) {
-                    return vec(bomb_rho_in, 0.0, 0.0, p_in);
-                } else {
-                    return vec(bomb_rho_out, 0.0, 0.0, p_out);
-                }
-            }
-            case Setup::shell: {
-                auto rho_out = 1.0;
-                auto p_out = rho_out * 1e-6;
-                auto r_in = 1.0;
-                auto rho_in = rho_out * shell_f * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
-                auto u_in = shell_u * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
-                auto p_in = rho_in * shell_e * (gamma_law - 1.);
-                if (x < r_in) {
-                    return vec(rho_in, u_in, 0.0, p_in);
-                } else {
-                    return vec(rho_out, 0.0, 0.0, p_out);
-                }
+            case Setup::envelope: {
+                auto envelope = envelope_t();
+                auto t = tstart;
+                auto m = envelope.shell_mass_rt(r, t);
+                auto d = envelope.shell_density_mt(m, t);
+                auto u = envelope.shell_gamma_beta_m(m);
+                auto p = 1e-6 * d;
+                return vec(d, u, 0.0, p);
             }
             default: return {};
             }
