@@ -270,7 +270,7 @@ struct Config
     double spi = 0.0;
     double tsi = 0.0;
     double dx = 1e-2;
-    double domain = 10.0;
+    dvec_t<2> domain = {0.1, 0.99};
     bool expand = false;
     std::vector<uint> sp;
     std::vector<uint> ts;
@@ -346,51 +346,55 @@ struct initial_model_t
 
 struct log_spherical_geometry_t
 {
-    log_spherical_geometry_t(const Config& config, double time) : time(time)
+    log_spherical_geometry_t(const Config& config)
     {
-        r0 = 1.0;
-        r1 = config.domain;
+        y0 = config.domain[0];
+        y1 = config.domain[1];
         q0 = 0.0;
         q1 = M_PI;
-        ni = int((log(r1) - log(r0)) / config.dx);
+        ni = int((log(y1) - log(y0)) / config.dx);
         nj = int((q1 - q0) / config.dx);
-        dlogr = (log(r1) - log(r0)) / ni;
+        dlogy = (log(y1) - log(y0)) / ni;
         dq = (q1 - q0) / nj;
     }
-    HD double face_position_i(int i) const
+    HD double face_position_i(int i, double t) const
     {
-        return r0 * exp(dlogr * i);
+        return face_velocity_i(i) * t;
     }
     HD double face_position_j(int j) const
     {
         return q0 + dq * j;
     }
-    HD double face_area_i(ivec_t<2> index) const
+    HD double face_velocity_i(int i) const
     {
-        auto rp = face_position_i(index[0]);
-        auto rm = face_position_i(index[0]);
+        return y0 * exp(dlogy * i);
+    }
+    HD double face_area_i(ivec_t<2> index, double t) const
+    {
+        auto rp = face_position_i(index[0], t);
+        auto rm = face_position_i(index[0], t);
         auto qm = face_position_j(index[1]);
         auto qp = face_position_j(index[1] + 1);
         return area(vec(rm, qm), vec(rp, qp));
     }
-    HD double face_area_j(ivec_t<2> index) const
+    HD double face_area_j(ivec_t<2> index, double t) const
     {
-        auto rm = face_position_i(index[0]);
-        auto rp = face_position_i(index[0] + 1);
+        auto rm = face_position_i(index[0], t);
+        auto rp = face_position_i(index[0] + 1, t);
         auto qm = face_position_j(index[1]);
         auto qp = face_position_j(index[1]);
         return area(vec(rm, qm), vec(rp, qp));
     }
-    HD dvec_t<2> cell_position(ivec_t<2> index) const
+    HD dvec_t<2> cell_position(ivec_t<2> index, double t) const
     {
-        auto r = 0.5 * (face_position_i(index[0]) + face_position_i(index[0] + 1));
+        auto r = 0.5 * (face_position_i(index[0], t) + face_position_i(index[0] + 1, t));
         auto q = 0.5 * (face_position_j(index[1]) + face_position_j(index[1] + 1));
         return {r, q};
     }
-    HD double cell_volume(ivec_t<2> index) const
+    HD double cell_volume(ivec_t<2> index, double t) const
     {
-        auto rm = face_position_i(index[0]);
-        auto rp = face_position_i(index[0] + 1);
+        auto rm = face_position_i(index[0], t);
+        auto rp = face_position_i(index[0] + 1, t);
         auto qm = face_position_j(index[1]);
         auto qp = face_position_j(index[1] + 1);
         auto dcost = -(cos(qp) - cos(qm));
@@ -414,13 +418,12 @@ struct log_spherical_geometry_t
         auto dz = z1 - z0;
         return M_PI * (s0 + s1) * sqrt(ds * ds + dz * dz);
     }
-    double r0;
-    double r1;
+    double y0;
+    double y1;
     double q0;
     double q1;
-    double dlogr;
+    double dlogy;
     double dq;
-    double time;
     int ni;
     int nj;
 };
@@ -455,7 +458,7 @@ static State average(const State& a, const State& b, double x)
 
 
 template<typename G>
-void update_prim(const State& state, G g, prim_array_t& p)
+void update_prim(const State& state, G g, prim_array_t& p, double t)
 {
     auto u = state.cons;
 
@@ -463,9 +466,9 @@ void update_prim(const State& state, G g, prim_array_t& p)
     {
         p = zeros<prim_t>(u.space()).cache();
     }
-    p = indices(u.space()).map([p, u, g] HD (ivec_t<2> i)
+    p = indices(u.space()).map([=] HD (ivec_t<2> i)
     {
-        auto dv = g.cell_volume(i);
+        auto dv = g.cell_volume(i, t);
         auto ui = u[i] / dv;
         auto pi = p[i];
         return cons_to_prim(ui, pi[3]).get();
@@ -480,18 +483,19 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 {
     auto t = state.time;
     auto u = state.cons;
-    auto g = G(config, state.time);
+    auto g = G(config);
     auto cells_space = g.cells_space();
     auto faces_space_i = cells_space.nudge(vec(0, 0), vec(1, 0));
     auto faces_space_j = cells_space.nudge(vec(0, 0), vec(0, 1));
-    auto xf_i = indices(faces_space_i).map([g] HD (ivec_t<2> i) { return g.face_position_i(i[0]); });
-    auto xf_j = indices(faces_space_j).map([g] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
-    auto da_i = indices(faces_space_i).map([g] HD (ivec_t<2> i) { return g.face_area_i(i); });
-    auto da_j = indices(faces_space_j).map([g] HD (ivec_t<2> i) { return g.face_area_j(i); });
-    auto dv = indices(cells_space).map([g] HD (ivec_t<2> i) { return g.cell_volume(i); });
+    auto vf_i = indices(faces_space_i).map([=] HD (ivec_t<2> i) { return g.face_velocity_i(i[0]); });
+    auto xf_i = indices(faces_space_i).map([=] HD (ivec_t<2> i) { return g.face_position_i(i[0], t); });
+    auto xf_j = indices(faces_space_j).map([=] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
+    auto da_i = indices(faces_space_i).map([=] HD (ivec_t<2> i) { return g.face_area_i(i, t); });
+    auto da_j = indices(faces_space_j).map([=] HD (ivec_t<2> i) { return g.face_area_j(i, t); });
+    auto dv = indices(cells_space).map([=] HD (ivec_t<2> i) { return g.cell_volume(i, t); });
 
     if (prim_dirty) {
-        update_prim(state, g, p);
+        update_prim(state, g, p, t);
     }
 
     auto model = initial_model_t(config);
@@ -500,7 +504,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         auto rf = xf_i[i];
         auto p = model.initial_primitive(rf, t);
         auto u = prim_to_cons(p);
-        return prim_and_cons_to_flux(p, u, 0);
+        return prim_and_cons_to_flux(p, u, 0) - u * vf_i[i];
     });
 
     auto fhat_i = model_radial_fluxes.insert(indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
@@ -509,7 +513,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         auto ur = u[i - vec(0, 0)] / dv[i - vec(0, 0)];
         auto pl = p[i - vec(1, 0)];
         auto pr = p[i - vec(0, 0)];
-        return riemann_hlle(pl, pr, ul, ur, 0, 0.0);
+        return riemann_hlle(pl, pr, ul, ur, 0, vf_i[i]);
     })).cache();
 
     auto fhat_j = zeros<cons_t>(faces_space_j).insert(indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
@@ -640,8 +644,9 @@ static void update_state(State& state, const Config& config)
     // };
     // update_prim(state, p);
 
-    auto g = Geometry(config, state.time);
-    auto dx = g.face_position_i(1) - g.face_position_i(0);
+    auto t = state.time;
+    auto g = Geometry(config);
+    auto dx = g.face_position_i(1, t) - g.face_position_i(0, t);
     auto dt = dx * config.cfl;
     auto s0 = state;
 
@@ -708,15 +713,15 @@ public:
     {
         auto model = initial_model_t(config);
         auto tstart = config.tstart;
-        auto g = log_spherical_geometry_t(config, tstart);
+        auto g = log_spherical_geometry_t(config);
         auto u = indices(g.cells_space()).map([=] HD (ivec_t<2> i) {
-            auto dv = g.cell_volume(i);
-            auto rc = g.cell_position(i)[0];
+            auto dv = g.cell_volume(i, tstart);
+            auto rc = g.cell_position(i, tstart)[0];
             auto p = model.initial_primitive(rc, tstart);
             auto u = prim_to_cons(p);
             return u * dv;
         });
-        state.time = 0.0;
+        state.time = tstart;
         state.iter = 0.0;
         state.cons = u.cache();
     }
@@ -761,11 +766,12 @@ public:
     }
     Product compute_product(const State& state, uint column) const override
     {
-        auto g = log_spherical_geometry_t(config, state.time);
+        auto t = state.time;
+        auto g = log_spherical_geometry_t(config);
         auto ic = indices(g.cells_space());
-        auto xf_i = indices(index_space(vec(0, 0), uvec(g.ni + 1, 1))).map([g] HD (ivec_t<2> i) { return g.face_position_i(i[0]); });
-        auto xf_j = indices(index_space(vec(0, 0), uvec(1, g.nj + 1))).map([g] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
-        auto dv = ic.map([g] HD (ivec_t<2> i) { return g.cell_volume(i); });
+        auto xf_i = indices(index_space(vec(0, 0), uvec(g.ni + 1, 1))).map([=] HD (ivec_t<2> i) { return g.face_position_i(i[0], t); });
+        auto xf_j = indices(index_space(vec(0, 0), uvec(1, g.nj + 1))).map([=] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
+        auto dv = ic.map([g, t] HD (ivec_t<2> i) { return g.cell_volume(i, t); });
         auto cons_field = [] (uint n) {
             return [n] HD (cons_t u) {
                 return cons_to_prim(u).get()[n];
