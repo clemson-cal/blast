@@ -301,6 +301,49 @@ VISITABLE_STRUCT(Config,
 
 
 
+struct initial_model_t
+{
+    initial_model_t(const Config& config)
+    : setup(setup_from_string(config.setup))
+    {
+    }
+    prim_t initial_primitive(double r, double t) const
+    {
+        switch (setup)
+        {
+        case Setup::uniform: {
+            // Uniform gas (tests spherical geometry source terms)
+            //
+            return vec(1.0, 0.0, 0.0, 1.0);
+        }
+        case Setup::wind: {
+            // Steady-state cold wind, sub-relativistic velocity
+            //
+            auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
+            auto u = 0.1; // wind gamma-beta
+            auto rho = f / (r * r * u);
+            auto pre = 1e-10 * pow(rho, gamma_law); // uniform specfic entropy
+            return vec(rho, 0.1, 0.0, pre);
+        }
+        case Setup::envelope: {
+            // A relativistic envelope based on the BNS merger scenario
+            // 
+            auto envelope = envelope_t();
+            auto m = envelope.shell_mass_rt(r, t);
+            auto d = envelope.shell_density_mt(m, t);
+            auto u = envelope.shell_gamma_beta_m(m);
+            auto p = 1e-6 * d;
+            return vec(d, u, 0.0, p);
+        }
+        default: return {};
+        }
+    }
+    Setup setup;
+};
+
+
+
+
 struct log_spherical_geometry_t
 {
     log_spherical_geometry_t(const Config& config, double time) : time(time)
@@ -435,6 +478,7 @@ void update_prim(const State& state, G g, prim_array_t& p)
 template<class G>
 static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
+    auto t = state.time;
     auto u = state.cons;
     auto g = G(config, state.time);
     auto cells_space = g.cells_space();
@@ -450,14 +494,23 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         update_prim(state, g, p);
     }
 
-    auto fhat_i = indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
+    auto model = initial_model_t(config);
+    auto model_radial_fluxes = indices(faces_space_i).map([=] HD (ivec_t<2> i)
+    {
+        auto rf = xf_i[i];
+        auto p = model.initial_primitive(rf, t);
+        auto u = prim_to_cons(p);
+        return prim_and_cons_to_flux(p, u, 0);
+    });
+
+    auto fhat_i = model_radial_fluxes.insert(indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
     {
         auto ul = u[i - vec(1, 0)] / dv[i - vec(1, 0)];
         auto ur = u[i - vec(0, 0)] / dv[i - vec(0, 0)];
         auto pl = p[i - vec(1, 0)];
         auto pr = p[i - vec(0, 0)];
         return riemann_hlle(pl, pr, ul, ur, 0, 0.0);
-    }).cache();
+    })).cache();
 
     auto fhat_j = zeros<cons_t>(faces_space_j).insert(indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
     {
@@ -468,7 +521,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
     })).cache();
 
-    auto du = indices(cells_space.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
+    auto du = indices(cells_space).map([=] HD (ivec_t<2> i)
     {
         auto rm_i = xf_i[i + vec(0, 0)];
         auto rp_i = xf_i[i + vec(1, 0)];
@@ -489,7 +542,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     return State{
         state.time + dt,
         state.iter + 1.0,
-        u.add(du).cache(),
+        (u + du).cache(),
     };
 }
 
@@ -653,46 +706,13 @@ public:
     }
     void initial_state(State& state) const override
     {
-        auto setup = setup_from_string(config.setup);
+        auto model = initial_model_t(config);
         auto tstart = config.tstart;
-        auto initial_primitive = [=] HD (dvec_t<2> pos) -> prim_t
-        {
-            auto r = pos[0];
-
-            switch (setup)
-            {
-            case Setup::uniform: {
-                    // Uniform gas (tests spherical geometry source terms)
-                    //
-                    return vec(1.0, 0.0, 0.0, 1.0);
-                }
-            case Setup::wind: {
-                    // Steady-state cold wind, sub-relativistic velocity
-                    //
-                    auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
-                    auto u = 0.1; // wind gamma-beta
-                    auto rho = f / (r * r * u);
-                    auto pre = 1e-10 * pow(rho, gamma_law); // uniform specfic entropy
-                    return vec(rho, 0.1, 0.0, pre);
-                }
-            case Setup::envelope: {
-                auto envelope = envelope_t();
-                auto t = tstart;
-                auto m = envelope.shell_mass_rt(r, t);
-                auto d = envelope.shell_density_mt(m, t);
-                auto u = envelope.shell_gamma_beta_m(m);
-                auto p = 1e-6 * d;
-                return vec(d, u, 0.0, p);
-            }
-            default: return {};
-            }
-        };
-        auto g = log_spherical_geometry_t(config, 0.0);
-        auto ic = indices(g.cells_space());
-        auto u = ic.map([=] HD (ivec_t<2> i) {
-            auto xc = g.cell_position(i);
+        auto g = log_spherical_geometry_t(config, tstart);
+        auto u = indices(g.cells_space()).map([=] HD (ivec_t<2> i) {
             auto dv = g.cell_volume(i);
-            auto p = initial_primitive(xc);
+            auto rc = g.cell_position(i)[0];
+            auto p = model.initial_primitive(rc, tstart);
             auto u = prim_to_cons(p);
             return u * dv;
         });
