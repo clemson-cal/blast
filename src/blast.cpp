@@ -560,8 +560,8 @@ void update_prim(const State& state, G g, prim_array_t& p)
 
 
 
-template<class F, class Geometry>
-void set_bc(array_t<1, F> &u, const Config& config, prim_array_t& p, int ng, const Geometry& geometry)
+template<class Geometry>
+void set_bc(cons_array_t &u, const prim_array_t& p, int ng, const Config& config, const Geometry& geometry)
 {
     auto bcl = config.bc[0];
     auto bcr = config.bc[1];
@@ -570,17 +570,16 @@ void set_bc(array_t<1, F> &u, const Config& config, prim_array_t& p, int ng, con
 
     if (bcl == 'f' && bcr == 'f')
     {
-        auto pl = p[ng];
-        auto pr = p[p.size() - ng - 1];
         for (int i = 0; i < ng; ++i)
         {
+            auto pl = p[i];
+            auto pr = p[p.size() - 1 - i];
+
             auto ul = prim_to_cons(pl) * geometry.cell_volume(i);
             auto ur = prim_to_cons(pr) * geometry.cell_volume(u.size() - i - 1);
 
             u._set(ivec(i), ul);
             u._set(ivec(u.size() - i - 1), ur);
-            p._set(ivec(i), pl);
-            p._set(ivec(u.size() - i - 1), pr);
         }
     }
     // else if (bcl == 'f' && (bcr == 'o' || bcr == 'r'))
@@ -614,8 +613,6 @@ void set_bc(array_t<1, F> &u, const Config& config, prim_array_t& p, int ng, con
 template<class G>
 static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
-    grid_geometry_t geometry(config, state.time);
-
     auto u = state.cons;
     auto g = G(config, state.time);
     auto ic = range(u.space());
@@ -626,6 +623,16 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto dv = iv.map([g] HD (int i) { return g.cell_volume(i); });
     auto interior_cells = ic.space().contract(1);
     auto interior_faces = iv.space().contract(1);
+
+    // the if statement here is so we don't read from the primitive array if
+    // it's not inialized yet. note that BC's need to be applied at the
+    // beginning of the time step, not the end, because the guard zones of the
+    // volume-integrated conserved array need to be multiplied by the zone
+    // volumes at the present time level.
+    if (p.space() == u.space())
+    {
+        set_bc(u, p, 1, config, g);
+    }
 
     if (prim_dirty) {
         update_prim(state, g, p);
@@ -652,14 +659,10 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
         return fm * am - fp * ap + udot;
     }) * dt;
 
-    u = u.add(du).cache();
-
-    set_bc(u, config, p, 1, geometry);
-
     return State{
         state.time + dt,
         state.iter + 1.0,
-        u,
+        u.add(du).cache(),
     };
 }
 
@@ -669,8 +672,6 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 template<class G>
 static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
-    grid_geometry_t geometry(config, state.time);
-
     auto u = state.cons;
     auto g = G(config, state.time);
     auto ic = range(u.space());
@@ -682,6 +683,16 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
     auto interior_cells = ic.space().contract(2);
     auto interior_faces = iv.space().contract(2);
     auto plm_theta = config.theta;
+
+    // the if statement here is so we don't read from the primitive array if
+    // it's not inialized yet. note that BC's need to be applied at the
+    // beginning of the time step, not the end, because the guard zones of the
+    // volume-integrated conserved array need to be multiplied by the zone
+    // volumes at the present time level.
+    if (p.space() == u.space())
+    {
+        set_bc(u, p, 1, config, g);
+    }
 
     if (prim_dirty) {
         update_prim(state, g, p);
@@ -722,14 +733,10 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
         return fm * am - fp * ap + udot;
     }) * dt;
 
-    u = u.add(du).cache();
-
-    set_bc(u, config, p, 2, geometry);
-
     return State{
         state.time + dt,
         state.iter + 1.0,
-        u,
+        u.add(du).cache(),
     };
 }
 
