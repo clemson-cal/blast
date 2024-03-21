@@ -307,7 +307,7 @@ struct initial_model_t
     : setup(setup_from_string(config.setup))
     {
     }
-    prim_t initial_primitive(double r, double t) const
+    prim_t initial_primitive(double r, double q, double t) const
     {
         switch (setup)
         {
@@ -332,7 +332,15 @@ struct initial_model_t
             auto m = envelope.shell_mass_rt(r, t);
             auto d = envelope.shell_density_mt(m, t);
             auto u = envelope.shell_gamma_beta_m(m);
+
+            // narrow shell (parameters hard-coded for now)
+            // 
+            if (r < 0.2) {
+                d *= 10.0 * exp(-pow(r - 0.2, 2.0) / 0.001) * exp(-q * q / 0.001) + 1.0;
+                u += 10.0 * exp(-pow(r - 0.2, 2.0) / 0.001) * exp(-q * q / 0.001);
+            }
             auto p = 1e-6 * d;
+
             return vec(d, u, 0.0, p);
         }
         default: return {};
@@ -502,7 +510,7 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto model_radial_fluxes = indices(faces_space_i).map([=] HD (ivec_t<2> i)
     {
         auto rf = xf_i[i];
-        auto p = model.initial_primitive(rf, t);
+        auto p = model.initial_primitive(rf, 0.0, t); // assumes no polar dependance of the initial state
         auto u = prim_to_cons(p);
         return prim_and_cons_to_flux(p, u, 0) - u * vf_i[i];
     });
@@ -712,16 +720,16 @@ public:
     void initial_state(State& state) const override
     {
         auto model = initial_model_t(config);
-        auto tstart = config.tstart;
+        auto t = config.tstart;
         auto g = log_spherical_geometry_t(config);
         auto u = indices(g.cells_space()).map([=] HD (ivec_t<2> i) {
-            auto dv = g.cell_volume(i, tstart);
-            auto rc = g.cell_position(i, tstart)[0];
-            auto p = model.initial_primitive(rc, tstart);
+            auto dv = g.cell_volume(i, t);
+            auto xc = g.cell_position(i, t);
+            auto p = model.initial_primitive(xc[0], xc[1], t);
             auto u = prim_to_cons(p);
             return u * dv;
         });
-        state.time = tstart;
+        state.time = t;
         state.iter = 0.0;
         state.cons = u.cache();
     }
