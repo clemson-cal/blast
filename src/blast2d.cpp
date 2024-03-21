@@ -48,17 +48,32 @@ using Product = memory_backed_array_t<2, double, ref_counted_ptr_t>;
 #define sign(x) copysign(1.0, x)
 #define minabs(a, b, c) min3(fabs(a), fabs(b), fabs(c))
 
-// HD static inline double plm_minmod(
-//     double yl,
-//     double yc,
-//     double yr,
-//     double plm_theta)
-// {
-//     double a = (yc - yl) * plm_theta;
-//     double b = (yr - yl) * 0.5;
-//     double c = (yr - yc) * plm_theta;
-//     return 0.25 * fabs(sign(a) + sign(b)) * (sign(a) + sign(c)) * minabs(a, b, c);
-// }
+HD static inline double plm_minmod(
+    double yl,
+    double yc,
+    double yr,
+    double plm_theta)
+{
+    double a = (yc - yl) * plm_theta;
+    double b = (yr - yl) * 0.5;
+    double c = (yr - yc) * plm_theta;
+    return 0.25 * fabs(sign(a) + sign(b)) * (sign(a) + sign(c)) * minabs(a, b, c);
+}
+
+template<uint S>
+HD dvec_t<S> plm_minmod(
+    dvec_t<S> yl,
+    dvec_t<S> yc,
+    dvec_t<S> yr,
+    double plm_theta)
+{
+    auto res = dvec_t<S>{};
+    for (int i = 0; i < S; ++i)
+    {
+        res[i] = plm_minmod(yl[i], yc[i], yr[i], plm_theta);
+    }
+    return res;
+}
 
 
 
@@ -143,6 +158,10 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
         }        
         p -= f / g;
         n += 1;
+
+        if (p < 0.0) {
+            p *= -1.0;
+        }
     }
     return some(prim_t{
         m / w0,
@@ -279,7 +298,6 @@ struct Config
     std::vector<uint> sp;
     std::vector<uint> ts;
     std::string outdir = ".";
-    std::string method = "plm";
     std::string setup = "uniform";
 };
 VISITABLE_STRUCT(Config,
@@ -302,7 +320,6 @@ VISITABLE_STRUCT(Config,
     sp,
     ts,
     outdir,
-    method,
     setup
 );
 
@@ -349,11 +366,11 @@ struct initial_model_t
             // narrow shell (parameters hard-coded for now)
             // 
             if (r < shell_r) {
-                auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 2.0));
+                auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 1.0));
                 d = d * (1.0 - y) + shell_n * y;
                 u = u * (1.0 - y) + shell_u * y;
             }
-            auto p = 1e-6 * d;
+            auto p = 1e-4 * d;
 
             return vec(d, u, 0.0, p);
         }
@@ -498,19 +515,18 @@ void update_prim(const State& state, G g, prim_array_t& p, double t)
         auto dv = g.cell_volume(i, t);
         auto ui = u[i] / dv;
         auto pi = p[i];
-        return cons_to_prim(ui, pi[3]).get();
-    }).cache();
+        return cons_to_prim(ui, pi[3]);
+    }).cache_unwrap();
 }
 
 
 
 
-template<class G>
-static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+static State next(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
 {
     auto t = state.time;
     auto u = state.cons;
-    auto g = G(config);
+    auto g = log_spherical_geometry_t(config);
     auto cells_space = g.cells_space();
     auto faces_space_i = cells_space.nudge(vec(0, 0), vec(1, 0));
     auto faces_space_j = cells_space.nudge(vec(0, 0), vec(0, 1));
@@ -519,11 +535,27 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
     auto xf_j = indices(faces_space_j).map([=] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
     auto da_i = indices(faces_space_i).map([=] HD (ivec_t<2> i) { return g.face_area_i(i, t); });
     auto da_j = indices(faces_space_j).map([=] HD (ivec_t<2> i) { return g.face_area_j(i, t); });
-    auto dv = indices(cells_space).map([=] HD (ivec_t<2> i) { return g.cell_volume(i, t); });
+    auto plm_theta = config.theta;
 
     if (prim_dirty) {
         update_prim(state, g, p, t);
     }
+
+    auto grad_i = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
+    {
+        auto pl = p[i - vec(1, 0)];
+        auto pc = p[i];
+        auto pr = p[i + vec(1, 0)];
+        return plm_minmod(pl, pc, pr, plm_theta);
+    })).cache();
+
+    auto grad_j = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
+    {
+        auto pl = p[i - vec(0, 1)];
+        auto pc = p[i];
+        auto pr = p[i + vec(0, 1)];
+        return plm_minmod(pl, pc, pr, plm_theta);
+    })).cache();
 
     auto model = initial_model_t(config);
     auto model_radial_fluxes = indices(faces_space_i).map([=] HD (ivec_t<2> i)
@@ -536,19 +568,19 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 
     auto fhat_i = model_radial_fluxes.insert(indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
     {
-        auto ul = u[i - vec(1, 0)] / dv[i - vec(1, 0)];
-        auto ur = u[i - vec(0, 0)] / dv[i - vec(0, 0)];
-        auto pl = p[i - vec(1, 0)];
-        auto pr = p[i - vec(0, 0)];
+        auto pl = p[i - vec(1, 0)] + grad_i[i - vec(1, 0)] * 0.5;
+        auto pr = p[i - vec(0, 0)] - grad_i[i - vec(0, 0)] * 0.5;
+        auto ul = prim_to_cons(pl);
+        auto ur = prim_to_cons(pr);
         return riemann_hlle(pl, pr, ul, ur, 0, vf_i[i]);
     })).cache();
 
     auto fhat_j = zeros<cons_t>(faces_space_j).insert(indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
     {
-        auto ul = u[i - vec(0, 1)] / dv[i - vec(0, 1)];
-        auto ur = u[i - vec(0, 0)] / dv[i - vec(0, 0)];
-        auto pl = p[i - vec(0, 1)];
-        auto pr = p[i - vec(0, 0)];
+        auto pl = p[i - vec(0, 1)] + grad_j[i - vec(0, 1)] * 0.5;
+        auto pr = p[i - vec(0, 0)] - grad_j[i - vec(0, 0)] * 0.5;
+        auto ul = prim_to_cons(pl);
+        auto ur = prim_to_cons(pr);
         return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
     })).cache();
 
@@ -580,96 +612,10 @@ static State next_pcm(const State& state, const Config& config, prim_array_t& p,
 
 
 
-template<class G>
-static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
-{
-    return state;
-    // auto u = state.cons;
-    // auto g = G(config, state.time);
-    // auto ic = range(u.space());
-    // auto iv = range(u.space().nudge(vec(0), vec(1)));
-    // auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
-    // auto vf = iv.map([g] HD (int i) { return g.face_velocity(i); });
-    // auto da = iv.map([g] HD (int i) { return g.face_area(i); });
-    // auto gradient_cells = ic.space().contract(1);
-    // auto interior_cells = ic.space().contract(2);
-    // auto interior_faces = iv.space().contract(2);
-    // auto plm_theta = config.theta;
-
-    // if (prim_dirty) {
-    //     update_prim(state, g, p);
-    // }
-
-    // auto grad = ic[gradient_cells].map([p, plm_theta] HD (int i)
-    // {
-    //     auto pl = p[i - 1];
-    //     auto pc = p[i + 0];
-    //     auto pr = p[i + 1];
-    //     auto gc = prim_t{};
-
-    //     for (int n = 0; n < 3; ++n)
-    //     {
-    //         gc[n] = plm_minmod(pl[n], pc[n], pr[n], plm_theta);
-    //     }
-    //     return gc;
-    // }).cache();
-
-    // auto fhat = iv[interior_faces].map([p, vf, grad] HD (int i)
-    // {
-    //     auto pl = p[i - 1] + grad[i - 1] * 0.5;
-    //     auto pr = p[i + 0] - grad[i + 0] * 0.5;
-    //     auto ul = prim_to_cons(pl);
-    //     auto ur = prim_to_cons(pr);
-    //     return riemann_hlle(pl, pr, ul, ur, vf[i]);
-    // }).cache();
-
-    // auto du = ic[interior_cells].map([rf, da, g, fhat, p] HD (int i)
-    // {
-    //     auto rm = rf[i + 0];
-    //     auto rp = rf[i + 1];
-    //     auto am = da[i + 0];
-    //     auto ap = da[i + 1];
-    //     auto fm = fhat[i + 0];
-    //     auto fp = fhat[i + 1];
-    //     auto udot = g.source_terms(p[i], rm, rp);
-    //     return fm * am - fp * ap + udot;
-    // }) * dt;
-
-    // return State{
-    //     state.time + dt,
-    //     state.iter + 1.0,
-    //     set_bc(u.add(du), config, 2),
-    // };
-}
-
-
-
-
 template<class Geometry>
 static void update_state(State& state, const Config& config)
 {
     static prim_array_t p;
-    auto next = std::function<State(State&, const Config&, prim_array_t&, double, int)>();
-
-    if (config.method == "pcm") {
-        next = next_pcm<Geometry>;
-    }
-    if (config.method == "plm") {
-        next = next_plm<Geometry>;
-    }
-    if (! next) {
-        throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
-    }
-
-    // Wavespeed calculation is presently disabled, max wave speed of c is
-    // assumed.
-    //
-    // auto wavespeed = [] HD (prim_t p) -> double
-    // {
-    //     auto a = outer_wavespeeds(p, 0);
-    //     return max2(fabs(a[0]), fabs(a[1]));
-    // };
-    // update_prim(state, p);
 
     auto t = state.time;
     auto g = Geometry(config);
