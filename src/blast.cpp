@@ -1235,7 +1235,7 @@ public:
         ImGui::SameLine();
         ImGui::Text("%s", status.message.data);
 
-        ImGui::SameLine();
+        // ImGui::SameLine();
         if (ImGui::Button("Style")) {
             show_style = true;
         }
