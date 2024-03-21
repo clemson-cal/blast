@@ -260,18 +260,22 @@ static Setup setup_from_string(const std::string& name)
  */
 struct Config
 {
-    int fold = 50;
+    int fold = 1;
     int rk = 2;
     double theta = 1.5;
-    double tstart = 0.0;
-    double tfinal = 0.0;
+    double tstart = 1.0;
+    double tfinal = 1.0;
     double cfl = 0.4;
     double cpi = 0.0;
     double spi = 0.0;
     double tsi = 0.0;
     double dx = 1e-2;
+    double shell_w = 0.1; // shell width over radius
+    double shell_q = 0.1; // shell opening angle
+    double shell_u = 10.; // four-velocity at the leading edge of the shell
+    double shell_r = 0.1; // radius of the leading edge of the shell at the start time
+    double shell_n = 1.0; // comoving density at the leading edge of the shell
     dvec_t<2> domain = {0.1, 0.99};
-    bool expand = false;
     std::vector<uint> sp;
     std::vector<uint> ts;
     std::string outdir = ".";
@@ -289,8 +293,12 @@ VISITABLE_STRUCT(Config,
     spi,
     tsi,
     dx,
+    shell_w,
+    shell_q,
+    shell_u,
+    shell_r,
+    shell_n,
     domain,
-    expand,
     sp,
     ts,
     outdir,
@@ -305,9 +313,14 @@ struct initial_model_t
 {
     initial_model_t(const Config& config)
     : setup(setup_from_string(config.setup))
+    , shell_w(config.shell_w)
+    , shell_q(config.shell_q)
+    , shell_u(config.shell_u)
+    , shell_r(config.shell_r)
+    , shell_n(config.shell_n)
     {
     }
-    prim_t initial_primitive(double r, double q, double t) const
+    HD prim_t initial_primitive(double r, double q, double t) const
     {
         switch (setup)
         {
@@ -335,9 +348,10 @@ struct initial_model_t
 
             // narrow shell (parameters hard-coded for now)
             // 
-            if (r < 0.2) {
-                d *= 10.0 * exp(-pow(r - 0.2, 2.0) / 0.001) * exp(-q * q / 0.001) + 1.0;
-                u += 10.0 * exp(-pow(r - 0.2, 2.0) / 0.001) * exp(-q * q / 0.001);
+            if (r < shell_r) {
+                auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 2.0));
+                d = d * (1.0 - y) + shell_n * y;
+                u = u * (1.0 - y) + shell_u * y;
             }
             auto p = 1e-6 * d;
 
@@ -347,6 +361,11 @@ struct initial_model_t
         }
     }
     Setup setup;
+    double shell_w; // shell width over radius
+    double shell_q; // shell opening angle
+    double shell_u; // four-velocity at the leading edge of the shell
+    double shell_r; // radius of the leading edge of the shell at the start time
+    double shell_n; // comoving density at the leading edge of the shell
 };
 
 
