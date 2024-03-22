@@ -83,12 +83,12 @@ HD dvec_t<S> plm_minmod(
  */
 HD static auto gamma_beta_squared(prim_t p) -> double
 {
-    return p[1] * p[1] + p[2] + p[2];
+    return p[1] * p[1] + p[2] * p[2];
 }
 
 HD static auto momentum_squared(cons_t u) -> double
 {
-    return u[1] * u[1] + u[2] + u[2];
+    return u[1] * u[1] + u[2] * u[2];
 }
 
 HD static auto lorentz_factor(prim_t p) -> double
