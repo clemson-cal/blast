@@ -17,7 +17,7 @@ def main(filename: str, field="radial_gamma_beta", log: bool = False):
         y = log10(y)
     x = r_faces * sin(q_faces)
     z = r_faces * cos(q_faces)
-    c = ax1.pcolormesh(x, z, y)
+    c = ax1.pcolormesh(x, z, y, edgecolors="none")
     plt.colorbar(c)
     # ax1.set_xlim(0.0, 0.3)
     # ax1.set_ylim(0.0, 0.3)

@@ -153,6 +153,9 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
         }
         if (fabs(f) < error_tolerance)
         {
+            if (p < 0.0) {
+                return none<prim_t>();                
+            }
             w0 = w;
             break;
         }        
@@ -262,6 +265,7 @@ struct Config
     double spi = 0.0;
     double tsi = 0.0;
     double dx = 1e-2;
+    double entropy = 1e-3;
     double shell_w = 0.1; // shell width over radius
     double shell_q = 0.1; // shell opening angle
     double shell_u = 10.; // four-velocity at the leading edge of the shell
@@ -284,6 +288,7 @@ VISITABLE_STRUCT(Config,
     spi,
     tsi,
     dx,
+    entropy,
     shell_w,
     shell_q,
     shell_u,
@@ -303,6 +308,7 @@ struct initial_model_t
 {
     initial_model_t(const Config& config)
     : setup(setup_from_string(config.setup))
+    , entropy(config.entropy)
     , shell_w(config.shell_w)
     , shell_q(config.shell_q)
     , shell_u(config.shell_u)
@@ -312,15 +318,6 @@ struct initial_model_t
     }
     HD prim_t initial_primitive(double r, double q, double t) const
     {
-        // {
-        //     auto x = r;
-        //     auto y = q;
-        //     if (x * x + y * y < 0.05) {
-        //         return vec(1.0, 0.0, 0.0, 1.0);
-        //     } else {
-        //         return vec(0.1, 0.0, 0.0, 0.125);
-        //     }
-        // }
         switch (setup)
         {
         case Setup::uniform: {
@@ -334,16 +331,17 @@ struct initial_model_t
             auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
             auto u = 1.0; // wind gamma-beta
             auto d = f / (r * r * u);
-            auto p = 1e-6 * pow(d, gamma_law); // uniform specfic entropy
 
             // narrow shell (parameters hard-coded for now)
             // 
             if (r < shell_r) {
-                auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 2.0));
+                auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 4.0));
                 d = d * (1.0 - y) + shell_n * y;
                 u = u * (1.0 - y) + shell_u * y;
             }
-            return vec(d, 0.1, 0.0, p);
+            auto p = entropy * pow(d, gamma_law); // uniform specfic entropy
+
+            return vec(d, u, 0.0, p);
         }
         case Setup::envelope: {
             // A relativistic envelope based on the BNS merger scenario
@@ -360,7 +358,7 @@ struct initial_model_t
                 d = d * (1.0 - y) + shell_n * y;
                 u = u * (1.0 - y) + shell_u * y;
             }
-            auto p = 1e-3 * d;
+            auto p = entropy * pow(d, gamma_law);
 
             return vec(d, u, 0.0, p);
         }
@@ -368,6 +366,7 @@ struct initial_model_t
         }
     }
     Setup setup;
+    double entropy;
     double shell_w; // shell width over radius
     double shell_q; // shell opening angle
     double shell_u; // four-velocity at the leading edge of the shell
@@ -385,7 +384,7 @@ struct log_spherical_geometry_t
         y0 = config.domain[0];
         y1 = config.domain[1];
         q0 = 0.0;
-        q1 = M_PI;
+        q1 = M_PI / 8.0;
         ni = int((log(y1) - log(y0)) / config.dx);
         nj = int((q1 - q0) / config.dx);
         dlogy = (log(y1) - log(y0)) / ni;
@@ -588,17 +587,31 @@ void update_prim(const State& state, G g, prim_array_t& p, double t)
 {
     auto u = state.cons;
 
-    if (p.space() != u.space())
-    {
+    if (p.space() != u.space()) {
         p = zeros<prim_t>(u.space()).cache();
     }
-    p = indices(u.space()).map([=] HD (ivec_t<2> i)
-    {
-        auto dv = g.cell_volume(i, t);
-        auto ui = u[i] / dv;
-        auto pi = p[i];
-        return cons_to_prim(ui, pi[3]);
-    }).cache_unwrap();
+    try {
+        p = indices(u.space()).map([=] HD (ivec_t<2> i) {
+            auto dv = g.cell_volume(i, t);
+            auto ui = u[i] / dv;
+            auto pi = p[i];
+            return cons_to_prim(ui, pi[3]);
+        }).cache_unwrap();
+    } catch (const std::exception& e) {
+        auto exec = vapor::cpu_executor_t();
+        auto t = state.time;
+        auto u = state.cons;
+        auto f = [=] HD (ivec_t<2> i) {
+            auto dv = g.cell_volume(i, t);
+            auto xc = g.cell_position(i, t);
+            auto ui = u[i] / dv;
+            if (! cons_to_prim(ui).has_value()) {
+                print("zone crash at ", xc, " u = ", ui, "\n");
+            }
+        };
+        exec.loop(u.space(), f);
+        throw;
+    }
 }
 
 
@@ -782,30 +795,7 @@ public:
     }
     void update(State& state) const override
     {
-        try {
-            return update_state(state, config);
-        } catch (const std::exception& e) {
-            auto exec = vapor::cpu_executor_t();
-            auto t = state.time;
-            auto u = state.cons;
-            auto g = Geometry(config);
-            auto f = [=] HD (ivec_t<2> i) -> prim_t
-            {
-                auto dv = g.cell_volume(i, t);
-                auto xc = g.cell_position(i, t);
-                auto ui = u[i] / dv;
-                auto res = cons_to_prim(ui);
-
-                if (res.has_value()) {
-                    return res.get();
-                } else {
-                    printf("zone crash at [%f %f]\n", xc[0], xc[1]);
-                    return {};
-                }
-            };
-            cache(indices(u.space()).map(f), exec, Runtime::allocator());
-            throw;
-        }
+        return update_state(state, config);
     }
     bool should_continue(const State& state) const override
     {
