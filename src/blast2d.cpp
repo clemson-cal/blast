@@ -308,6 +308,7 @@ struct initial_model_t
 {
     initial_model_t(const Config& config)
     : setup(setup_from_string(config.setup))
+    , tstart(config.tstart)
     , entropy(config.entropy)
     , shell_w(config.shell_w)
     , shell_q(config.shell_q)
@@ -331,17 +332,8 @@ struct initial_model_t
             auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
             auto u = 1.0; // wind gamma-beta
             auto d = f / (r * r * u);
-
-            // narrow shell (parameters hard-coded for now)
-            // 
-            if (r < shell_r) {
-                auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 4.0));
-                d = d * (1.0 - y) + shell_n * y;
-                u = u * (1.0 - y) + shell_u * y;
-            }
-            auto p = entropy * pow(d, gamma_law); // uniform specfic entropy
-
-            return vec(d, u, 0.0, p);
+            auto p = entropy * pow(shell_n, gamma_law);
+            return add_shell(r, q, t, vec(d, u, 0.0, p));
         }
         case Setup::envelope: {
             // A relativistic envelope based on the BNS merger scenario
@@ -350,22 +342,31 @@ struct initial_model_t
             auto m = envelope.shell_mass_rt(r, t);
             auto d = envelope.shell_density_mt(m, t);
             auto u = envelope.shell_gamma_beta_m(m);
-
-            // narrow shell (parameters hard-coded for now)
-            // 
-            if (r < shell_r) {
-                auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 2.0));
-                d = d * (1.0 - y) + shell_n * y;
-                u = u * (1.0 - y) + shell_u * y;
-            }
-            auto p = entropy * pow(d, gamma_law);
-
-            return vec(d, u, 0.0, p);
+            auto p = entropy * pow(shell_n, gamma_law);
+            return add_shell(r, q, t, vec(d, u, 0.0, p));
         }
         default: return {};
         }
     }
+    HD prim_t add_shell(double r, double q, double t, prim_t bg_prim) const
+    {
+        if (r < shell_r && t == tstart) {
+            auto shell_p = entropy * pow(shell_n, gamma_law);
+            auto shell_prim = prim_t{
+                shell_n,
+                shell_u,
+                0.0,
+                shell_p,
+            };
+            auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 2.0));
+            return bg_prim * (1.0 - y) + shell_prim * y;
+        }
+        else {
+            return bg_prim;
+        }
+    }
     Setup setup;
+    double tstart;
     double entropy;
     double shell_w; // shell width over radius
     double shell_q; // shell opening angle
@@ -485,73 +486,74 @@ struct log_spherical_geometry_t
 
 
 
-struct planar_geometry_t
-{
-    planar_geometry_t(const Config& config)
-    {
-        x0 = config.domain[0];
-        x1 = config.domain[1];
-        y0 = config.domain[0];
-        y1 = config.domain[1];
-        ni = int((x1 - x0) / config.dx);
-        nj = int((y1 - y0) / config.dx);
-        dx = (x1 - x0) / ni;
-        dy = (y1 - y0) / nj;
-    }
-    HD double face_position_i(int i, double t=0.0) const
-    {
-        return x0 + i * dx;
-    }
-    HD double face_position_j(int j) const
-    {
-        return y0 + j * dy;
-    }
-    HD double face_velocity_i(int i) const
-    {
-        return 0.0;
-    }
-    HD double face_area_i(ivec_t<2> index, double t=0.0) const
-    {
-        return dy;
-    }
-    HD double face_area_j(ivec_t<2> index, double t=0.0) const
-    {
-        return dx;
-    }
-    HD dvec_t<2> cell_position(ivec_t<2> index, double t) const
-    {
-        auto r = 0.5 * (face_position_i(index[0]) + face_position_i(index[0] + 1));
-        auto q = 0.5 * (face_position_j(index[1]) + face_position_j(index[1] + 1));
-        return {r, q};
-    }
-    HD double cell_volume(ivec_t<2> index, double t) const
-    {
-        return dx * dy;
-    }
-    HD cons_t source_terms(prim_t p, double xm, double xp, double ym, double yp) const
-    {
-        return {};
-    }
-    index_space_t<2> cells_space() const
-    {
-        return index_space(ivec(0, 0), uvec(ni, nj));
-    }
-    HD double area(dvec_t<2> c0, dvec_t<2> c1) const
-    {
-        return dx; // or dy, but they are the same
-    }
-    double x0;
-    double x1;
-    double y0;
-    double y1;
-    double dx;
-    double dy;
-    int ni;
-    int nj;
-};
+// This class was used for testing / debugging
+// 
+// struct planar_geometry_t
+// {
+//     planar_geometry_t(const Config& config)
+//     {
+//         x0 = config.domain[0];
+//         x1 = config.domain[1];
+//         y0 = config.domain[0];
+//         y1 = config.domain[1];
+//         ni = int((x1 - x0) / config.dx);
+//         nj = int((y1 - y0) / config.dx);
+//         dx = (x1 - x0) / ni;
+//         dy = (y1 - y0) / nj;
+//     }
+//     HD double face_position_i(int i, double t=0.0) const
+//     {
+//         return x0 + i * dx;
+//     }
+//     HD double face_position_j(int j) const
+//     {
+//         return y0 + j * dy;
+//     }
+//     HD double face_velocity_i(int i) const
+//     {
+//         return 0.0;
+//     }
+//     HD double face_area_i(ivec_t<2> index, double t=0.0) const
+//     {
+//         return dy;
+//     }
+//     HD double face_area_j(ivec_t<2> index, double t=0.0) const
+//     {
+//         return dx;
+//     }
+//     HD dvec_t<2> cell_position(ivec_t<2> index, double t) const
+//     {
+//         auto r = 0.5 * (face_position_i(index[0]) + face_position_i(index[0] + 1));
+//         auto q = 0.5 * (face_position_j(index[1]) + face_position_j(index[1] + 1));
+//         return {r, q};
+//     }
+//     HD double cell_volume(ivec_t<2> index, double t) const
+//     {
+//         return dx * dy;
+//     }
+//     HD cons_t source_terms(prim_t p, double xm, double xp, double ym, double yp) const
+//     {
+//         return {};
+//     }
+//     index_space_t<2> cells_space() const
+//     {
+//         return index_space(ivec(0, 0), uvec(ni, nj));
+//     }
+//     HD double area(dvec_t<2> c0, dvec_t<2> c1) const
+//     {
+//         return dx; // or dy, but they are the same
+//     }
+//     double x0;
+//     double x1;
+//     double y0;
+//     double y1;
+//     double dx;
+//     double dy;
+//     int ni;
+//     int nj;
+// };
 
 using Geometry = log_spherical_geometry_t;
-// using Geometry = planar_geometry_t;
 
 
 
