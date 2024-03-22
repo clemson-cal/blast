@@ -158,10 +158,6 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
         }        
         p -= f / g;
         n += 1;
-
-        if (p < 0.0) {
-            p *= -1.0;
-        }
     }
     return some(prim_t{
         m / w0,
@@ -198,17 +194,17 @@ HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
     auto v2 = vn * vn;
     // These are the Marti & Muller versions of the eigenvalue formula:
     // 
-    auto vv = uu / (1.0 + uu);
-    auto k0 = sqrt(a2 * (1.0 - vv) * (1.0 - vv * a2 - v2 * (1.0 - a2)));
-    return vec(
-        (vn * (1.0 - a2) - k0) / (1.0 - vv * a2),
-        (vn * (1.0 - a2) + k0) / (1.0 - vv * a2)
-    );
+    // auto vv = uu / (1.0 + uu);
+    // auto k0 = sqrt(a2 * (1.0 - vv) * (1.0 - vv * a2 - v2 * (1.0 - a2)));
+    // return vec(
+    //     (vn * (1.0 - a2) - k0) / (1.0 - vv * a2),
+    //     (vn * (1.0 - a2) + k0) / (1.0 - vv * a2)
+    // );
     // These are the Mignone & Bodo (2005) versions of the eigenvalue formula:
-    // auto g2 = 1.0 + uu;
-    // auto s2 = a2 / g2 / (1.0 - a2);
-    // auto k0 = sqrt(s2 * (1.0 - v2 + s2));
-    // return vec(vn - k0, vn + k0) / (1.0 + s2);
+    auto g2 = 1.0 + uu;
+    auto s2 = a2 / g2 / (1.0 - a2);
+    auto k0 = sqrt(s2 * (1.0 - v2 + s2));
+    return vec(vn - k0, vn + k0) / (1.0 + s2);
 }
 
 HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur, int axis, double v_face) -> cons_t
@@ -217,8 +213,8 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur, int axis
     auto fr = prim_and_cons_to_flux(pr, ur, axis);
     auto al = outer_wavespeeds(pl, axis);
     auto ar = outer_wavespeeds(pr, axis);
-    auto am = min3(0.0, al[0], ar[0]);
-    auto ap = max3(0.0, al[1], ar[1]);
+    auto am = min2(al[0], ar[0]);
+    auto ap = max2(al[1], ar[1]);
     if (v_face < am) {
         return fl - ul * v_face;
     }
@@ -230,29 +226,6 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur, int axis
     return f_hll - u_hll * v_face;
 };
 
-HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1, double q0, double q1)
-{
-    // Eqn A8 in Zhang & MacFadyen (2006), integrated over the spherical shell
-    // between r0 and r1.
-    //
-    auto dcosq = cos(q1) - cos(q0);
-    auto dsinq = sin(q1) - sin(q0);
-    auto df = 2.0 * M_PI;
-    auto ur = p[1];
-    auto uq = p[2];
-    auto uf = 0.0;
-    auto hg = enthalpy_density(p);
-    auto pg = p[3];
-    auto dr2 = r1 * r1 - r0 * r0;
-    auto srdot = -0.5 * df * dr2 * dcosq * (hg * (uq * uq + uf * uf) + 2.0 * pg);
-    auto sqdot = +0.5 * df * dr2 * (dcosq * hg * ur * uq + dsinq * (pg + hg * uf * uf));
-    return cons_t{
-        0.0,
-        srdot,
-        sqdot,
-        0.0,
-    };
-}
 
 
 
@@ -295,7 +268,7 @@ struct Config
     double shell_r = 0.1; // radius of the leading edge of the shell at the start time
     double shell_n = 1.0; // comoving density at the leading edge of the shell
     dvec_t<2> domain = {0.1, 0.99};
-    std::vector<uint> sp;
+    std::vector<uint> sp = {0, 1, 2, 3, 4, 5};
     std::vector<uint> ts;
     std::string outdir = ".";
     std::string setup = "uniform";
@@ -348,7 +321,6 @@ struct initial_model_t
         //         return vec(0.1, 0.0, 0.0, 0.125);
         //     }
         // }
-
         switch (setup)
         {
         case Setup::uniform: {
@@ -360,7 +332,7 @@ struct initial_model_t
             // Steady-state cold wind, sub-relativistic velocity
             //
             auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
-            auto u = 0.1; // wind gamma-beta
+            auto u = 1.0; // wind gamma-beta
             auto d = f / (r * r * u);
             auto p = 1e-6 * pow(d, gamma_law); // uniform specfic entropy
 
@@ -380,7 +352,6 @@ struct initial_model_t
             auto m = envelope.shell_mass_rt(r, t);
             auto d = envelope.shell_density_mt(m, t);
             auto u = envelope.shell_gamma_beta_m(m);
-            // auto shell_p = 0.1;
 
             // narrow shell (parameters hard-coded for now)
             // 
@@ -422,8 +393,8 @@ struct log_spherical_geometry_t
     }
     HD double face_position_i(int i, double t) const
     {
-        return y0 * exp(dlogy * i);
-        // return face_velocity_i(i) * t;
+        // return y0 * exp(dlogy * i);
+        return face_velocity_i(i) * t;
     }
     HD double face_position_j(int j) const
     {
@@ -431,8 +402,8 @@ struct log_spherical_geometry_t
     }
     HD double face_velocity_i(int i) const
     {
-        return 0.0;
-        // return y0 * exp(dlogy * i);
+        // return 0.0;
+        return y0 * exp(dlogy * i);
     }
     HD double face_area_i(ivec_t<2> index, double t) const
     {
@@ -465,9 +436,28 @@ struct log_spherical_geometry_t
         auto dcost = -(cos(qp) - cos(qm));
         return 2.0 * M_PI * (pow(rp, 3) - pow(rm, 3)) / 3.0 * dcost;
     }
-    HD cons_t source_terms(prim_t p, double xm_i, double xp_i, double xm_j, double xp_j) const
+    HD cons_t source_terms(prim_t p, double r0, double r1, double q0, double q1) const
     {
-        return spherical_geometry_source_terms(p, xm_i, xp_i, xm_j, xp_j);
+        // Eqn A8 in Zhang & MacFadyen (2006), integrated over the spherical shell
+        // between r0 and r1.
+        //
+        auto dcosq = cos(q1) - cos(q0);
+        auto dsinq = sin(q1) - sin(q0);
+        auto df = 2.0 * M_PI;
+        auto ur = p[1];
+        auto uq = p[2];
+        auto uf = 0.0;
+        auto hg = enthalpy_density(p);
+        auto pg = p[3];
+        auto dr2 = r1 * r1 - r0 * r0;
+        auto srdot = -0.5 * df * dr2 * dcosq * (hg * (uq * uq + uf * uf) + 2.0 * pg);
+        auto sqdot = +0.5 * df * dr2 * (dcosq * hg * ur * uq + dsinq * (pg + hg * uf * uf));
+        return cons_t{
+            0.0,
+            srdot,
+            sqdot,
+            0.0,
+        };
     }
     index_space_t<2> cells_space() const
     {
@@ -509,7 +499,7 @@ struct planar_geometry_t
         dx = (x1 - x0) / ni;
         dy = (y1 - y0) / nj;
     }
-    HD double face_position_i(int i, double t) const
+    HD double face_position_i(int i, double t=0.0) const
     {
         return x0 + i * dx;
     }
@@ -521,37 +511,25 @@ struct planar_geometry_t
     {
         return 0.0;
     }
-    HD double face_area_i(ivec_t<2> index, double t) const
+    HD double face_area_i(ivec_t<2> index, double t=0.0) const
     {
-        auto rm = face_position_i(index[0], t);
-        auto rp = face_position_i(index[0], t);
-        auto qm = face_position_j(index[1]);
-        auto qp = face_position_j(index[1] + 1);
-        return area(vec(rm, qm), vec(rp, qp));
+        return dy;
     }
-    HD double face_area_j(ivec_t<2> index, double t) const
+    HD double face_area_j(ivec_t<2> index, double t=0.0) const
     {
-        auto rm = face_position_i(index[0], t);
-        auto rp = face_position_i(index[0] + 1, t);
-        auto qm = face_position_j(index[1]);
-        auto qp = face_position_j(index[1]);
-        return area(vec(rm, qm), vec(rp, qp));
+        return dx;
     }
     HD dvec_t<2> cell_position(ivec_t<2> index, double t) const
     {
-        auto r = 0.5 * (face_position_i(index[0], t) + face_position_i(index[0] + 1, t));
+        auto r = 0.5 * (face_position_i(index[0]) + face_position_i(index[0] + 1));
         auto q = 0.5 * (face_position_j(index[1]) + face_position_j(index[1] + 1));
         return {r, q};
     }
     HD double cell_volume(ivec_t<2> index, double t) const
     {
-        auto xm = face_position_i(index[0], t);
-        auto xp = face_position_i(index[0] + 1, t);
-        auto ym = face_position_j(index[1]);
-        auto yp = face_position_j(index[1] + 1);
-        return (xp - xm) * (yp - ym);
+        return dx * dy;
     }
-    HD cons_t source_terms(prim_t p, double xm_i, double xp_i, double xm_j, double xp_j) const
+    HD cons_t source_terms(prim_t p, double xm, double xp, double ym, double yp) const
     {
         return {};
     }
@@ -561,7 +539,7 @@ struct planar_geometry_t
     }
     HD double area(dvec_t<2> c0, dvec_t<2> c1) const
     {
-        return dx;
+        return dx; // or dy, but they are the same
     }
     double x0;
     double x1;
@@ -574,6 +552,7 @@ struct planar_geometry_t
 };
 
 using Geometry = log_spherical_geometry_t;
+// using Geometry = planar_geometry_t;
 
 
 
@@ -644,7 +623,7 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
         update_prim(state, g, p, t);
     }
 
-    auto grad_i = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
+    auto grad_i = zeros<cons_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
     {
         auto pl = p[i - vec(1, 0)];
         auto pc = p[i];
@@ -652,151 +631,7 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
         return plm_minmod(pl, pc, pr, plm_theta);
     })).cache();
 
-    auto grad_j = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
-    {
-        auto pl = p[i - vec(0, 1)];
-        auto pc = p[i];
-        auto pr = p[i + vec(0, 1)];
-        return plm_minmod(pl, pc, pr, plm_theta);
-    })).cache();
-
-    auto fhat_i = indices(faces_space_i.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
-    {
-        auto pl = p[i - vec(1, 0)] + grad_i[i - vec(1, 0)] * 0.5;
-        auto pr = p[i - vec(0, 0)] - grad_i[i - vec(0, 0)] * 0.5;
-        auto ul = prim_to_cons(pl);
-        auto ur = prim_to_cons(pr);
-        return riemann_hlle(pl, pr, ul, ur, 0, vf_i[i]);
-    }).cache();
-
-    auto fhat_j = indices(faces_space_j.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
-    {
-        auto pl = p[i - vec(0, 1)] + grad_j[i - vec(0, 1)] * 0.5;
-        auto pr = p[i - vec(0, 0)] - grad_j[i - vec(0, 0)] * 0.5;
-        auto ul = prim_to_cons(pl);
-        auto ur = prim_to_cons(pr);
-        return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
-    }).cache();
-
-    auto du = indices(cells_space.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
-    {
-        auto rm = xf_i[i + vec(0, 0)];
-        auto rp = xf_i[i + vec(1, 0)];
-        auto qm = xf_j[i + vec(0, 0)];
-        auto qp = xf_j[i + vec(0, 1)];
-        auto am_i = da_i[i + vec(0, 0)];
-        auto ap_i = da_i[i + vec(1, 0)];
-        auto am_j = da_j[i + vec(0, 0)];
-        auto ap_j = da_j[i + vec(0, 1)];
-        auto fm_i = fhat_i[i + vec(0, 0)];
-        auto fp_i = fhat_i[i + vec(1, 0)];
-        auto fm_j = fhat_j[i + vec(0, 0)];
-        auto fp_j = fhat_j[i + vec(0, 1)];
-        auto udot = g.source_terms(p[i], rm, rp, qm, qp);
-        return fm_i * am_i - fp_i * ap_i + fm_j * am_j - fp_j * ap_j + udot;
-    }) * dt;
-
-    return State{
-        state.time + dt,
-        state.iter + 1.0,
-        u.add(du).cache(),
-    };
-
-    // auto grad_i = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
-    // {
-    //     auto pl = p[i - vec(1, 0)];
-    //     auto pc = p[i];
-    //     auto pr = p[i + vec(1, 0)];
-    //     return plm_minmod(pl, pc, pr, plm_theta);
-    // })).cache();
-
-    // auto grad_j = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
-    // {
-    //     auto pl = p[i - vec(0, 1)];
-    //     auto pc = p[i];
-    //     auto pr = p[i + vec(0, 1)];
-    //     return plm_minmod(pl, pc, pr, plm_theta);
-    // })).cache();
-
-    // auto model = initial_model_t(config);
-    // auto model_radial_fluxes = indices(faces_space_i).map([=] HD (ivec_t<2> i)
-    // {
-    //     auto rf = xf_i[i];
-    //     auto p = model.initial_primitive(rf, 0.0, t); // assumes no polar dependance of the initial state
-    //     auto u = prim_to_cons(p);
-    //     return prim_and_cons_to_flux(p, u, 0) - u * vf_i[i];
-    // });
-
-    // auto fhat_i = model_radial_fluxes.insert(indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
-    // {
-    //     auto pl = p[i - vec(1, 0)] + grad_i[i - vec(1, 0)] * 0.5;
-    //     auto pr = p[i - vec(0, 0)] - grad_i[i - vec(0, 0)] * 0.5;
-    //     auto ul = prim_to_cons(pl);
-    //     auto ur = prim_to_cons(pr);
-    //     return riemann_hlle(pl, pr, ul, ur, 0, vf_i[i]);
-    // })).cache();
-
-    // auto fhat_j = zeros<cons_t>(faces_space_j).insert(indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
-    // {
-    //     auto pl = p[i - vec(0, 1)] + grad_j[i - vec(0, 1)] * 0.5;
-    //     auto pr = p[i - vec(0, 0)] - grad_j[i - vec(0, 0)] * 0.5;
-    //     auto ul = prim_to_cons(pl);
-    //     auto ur = prim_to_cons(pr);
-    //     return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
-    // })).cache();
-
-    // auto du = indices(cells_space).map([=] HD (ivec_t<2> i)
-    // {
-    //     auto rm = xf_i[i + vec(0, 0)];
-    //     auto rp = xf_i[i + vec(1, 0)];
-    //     auto qm = xf_j[i + vec(0, 0)];
-    //     auto qp = xf_j[i + vec(0, 1)];
-    //     auto am_i = da_i[i + vec(0, 0)];
-    //     auto ap_i = da_i[i + vec(1, 0)];
-    //     auto am_j = da_j[i + vec(0, 0)];
-    //     auto ap_j = da_j[i + vec(0, 1)];
-    //     auto fm_i = fhat_i[i + vec(0, 0)];
-    //     auto fp_i = fhat_i[i + vec(1, 0)];
-    //     auto fm_j = fhat_j[i + vec(0, 0)];
-    //     auto fp_j = fhat_j[i + vec(0, 1)];
-    //     auto udot = g.source_terms(p[i], rm, rp, qm, qp);
-    //     return fm_i * am_i - fp_i * ap_i + fm_j * am_j - fp_j * ap_j + udot;
-    // }) * dt;
-
-    // return State{
-    //     state.time + dt,
-    //     state.iter + 1.0,
-    //     (u + du).cache(),
-    // };
-}
-
-/*
-    auto t = state.time;
-    auto u = state.cons;
-    auto g = Geometry(config);
-    auto cells_space = g.cells_space();
-    auto faces_space_i = cells_space.nudge(vec(0, 0), vec(1, 0));
-    auto faces_space_j = cells_space.nudge(vec(0, 0), vec(0, 1));
-    auto vf_i = indices(faces_space_i).map([=] HD (ivec_t<2> i) { return g.face_velocity_i(i[0]); });
-    auto xf_i = indices(faces_space_i).map([=] HD (ivec_t<2> i) { return g.face_position_i(i[0], t); });
-    auto xf_j = indices(faces_space_j).map([=] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
-    auto da_i = indices(faces_space_i).map([=] HD (ivec_t<2> i) { return g.face_area_i(i, t); });
-    auto da_j = indices(faces_space_j).map([=] HD (ivec_t<2> i) { return g.face_area_j(i, t); });
-    auto plm_theta = config.theta;
-
-    if (prim_dirty) {
-        update_prim(state, g, p, t);
-    }
-
-    auto grad_i = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
-    {
-        auto pl = p[i - vec(1, 0)];
-        auto pc = p[i];
-        auto pr = p[i + vec(1, 0)];
-        return plm_minmod(pl, pc, pr, plm_theta);
-    })).cache();
-
-    auto grad_j = zeros<prim_t>(cells_space).insert(indices(cells_space.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
+    auto grad_j = zeros<cons_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
     {
         auto pl = p[i - vec(0, 1)];
         auto pc = p[i];
@@ -824,10 +659,10 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
 
     auto du = indices(cells_space.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
     {
-        auto rm_i = xf_i[i + vec(0, 0)];
-        auto rp_i = xf_i[i + vec(1, 0)];
-        auto rm_j = xf_j[i + vec(0, 0)];
-        auto rp_j = xf_j[i + vec(0, 1)];
+        auto rm = xf_i[i + vec(0, 0)];
+        auto rp = xf_i[i + vec(1, 0)];
+        auto qm = xf_j[i + vec(0, 0)];
+        auto qp = xf_j[i + vec(0, 1)];
         auto am_i = da_i[i + vec(0, 0)];
         auto ap_i = da_i[i + vec(1, 0)];
         auto am_j = da_j[i + vec(0, 0)];
@@ -836,7 +671,7 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
         auto fp_i = fhat_i[i + vec(1, 0)];
         auto fm_j = fhat_j[i + vec(0, 0)];
         auto fp_j = fhat_j[i + vec(0, 1)];
-        auto udot = g.source_terms(p[i], rm_i, rp_i, rm_j, rp_j);
+        auto udot = g.source_terms(p[i], rm, rp, qm, qp);
         return fm_i * am_i - fp_i * ap_i + fm_j * am_j - fp_j * ap_j + udot;
     }) * dt;
 
@@ -844,7 +679,7 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
     auto model_u = indices(cells_space).map([=] HD (ivec_t<2> i)
     {
         auto x = g.cell_position(i, t);
-        auto p = model.initial_primitive(x[0], x[1], t); // assumes no polar dependance of the initial state
+        auto p = model.initial_primitive(x[0], x[1], t);
         auto u = prim_to_cons(p);
         return u * g.cell_volume(i, t);
     });
@@ -855,7 +690,9 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
         state.iter + 1.0,
         u1.cache(),
     };
- */
+}
+
+
 
 
 static void update_state(State& state, const Config& config)
@@ -957,7 +794,7 @@ public:
                 auto dv = g.cell_volume(i, t);
                 auto xc = g.cell_position(i, t);
                 auto ui = u[i] / dv;
-                auto res = cons_to_prim(ui, 0.0);
+                auto res = cons_to_prim(ui);
 
                 if (res.has_value()) {
                     return res.get();
@@ -999,9 +836,10 @@ public:
         switch (column) {
         case 0: return "comoving_mass_density";
         case 1: return "radial_gamma_beta";
-        case 2: return "gas_pressure";
-        case 3: return "face_positions_i";
-        case 4: return "face_positions_j";
+        case 2: return "polar_gamma_beta";
+        case 3: return "gas_pressure";
+        case 4: return "face_positions_i";
+        case 5: return "face_positions_j";
         }
         return nullptr;
     }
@@ -1021,9 +859,10 @@ public:
         switch (column) {
         case 0: return (state.cons / dv).map(cons_field(0)).cache();
         case 1: return (state.cons / dv).map(cons_field(1)).cache();
-        case 2: return (state.cons / dv).map(cons_field(3)).cache();
-        case 3: return xf_i.cache();
-        case 4: return xf_j.cache();
+        case 2: return (state.cons / dv).map(cons_field(2)).cache();
+        case 3: return (state.cons / dv).map(cons_field(3)).cache();
+        case 4: return xf_i.cache();
+        case 5: return xf_j.cache();
         }
         return {};
     }
