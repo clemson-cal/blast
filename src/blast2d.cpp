@@ -324,7 +324,7 @@ struct initial_model_t
         case Setup::uniform: {
             // Uniform gas (tests spherical geometry source terms)
             //
-            return vec(1.0, 0.0, 0.0, 1.0);
+            return add_shell(r, q, t, vec(1.0, 0.0, 0.0, 1.0));
         }
         case Setup::wind: {
             // Steady-state cold wind, sub-relativistic velocity
@@ -832,6 +832,10 @@ public:
         case 3: return "gas_pressure";
         case 4: return "face_positions_i";
         case 5: return "face_positions_j";
+        case 6: return "mass";
+        case 7: return "radial_momentum";
+        case 8: return "polar_momentum";
+        case 9: return "energy";
         }
         return nullptr;
     }
@@ -839,6 +843,7 @@ public:
     {
         auto t = state.time;
         auto g = Geometry(config);
+        auto u = state.cons;
         auto ic = indices(g.cells_space());
         auto xf_i = indices(index_space(vec(0, 0), uvec(g.ni + 1, 1))).map([=] HD (ivec_t<2> i) { return g.face_position_i(i[0], t); });
         auto xf_j = indices(index_space(vec(0, 0), uvec(1, g.nj + 1))).map([=] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
@@ -849,12 +854,16 @@ public:
             };
         };
         switch (column) {
-        case 0: return (state.cons / dv).map(cons_field(0)).cache();
-        case 1: return (state.cons / dv).map(cons_field(1)).cache();
-        case 2: return (state.cons / dv).map(cons_field(2)).cache();
-        case 3: return (state.cons / dv).map(cons_field(3)).cache();
+        case 0: return (u / dv).map(cons_field(0)).cache();
+        case 1: return (u / dv).map(cons_field(1)).cache();
+        case 2: return (u / dv).map(cons_field(2)).cache();
+        case 3: return (u / dv).map(cons_field(3)).cache();
         case 4: return xf_i.cache();
         case 5: return xf_j.cache();
+        case 6: return u.map([] HD (cons_t u) { return u[0]; }).cache();
+        case 7: return u.map([] HD (cons_t u) { return u[1]; }).cache();
+        case 8: return u.map([] HD (cons_t u) { return u[2]; }).cache();
+        case 9: return u.map([] HD (cons_t u) { return u[3]; }).cache();
         }
         return {};
     }
