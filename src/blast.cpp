@@ -299,7 +299,7 @@ struct Config
     vec_t<float, 3> sod_r = {{0.1, 0.0, 0.125}};
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
     vec_t<float, 2> move = {{0.0, 0.0}}; // speed of mesh endpoints
-    vec_t<char, 2> bc = {{'f', 'f'}};
+    vec_t<char, 2> bc = {{'o', 'f'}};
     std::vector<uint> sp = {0, 1, 2, 3};
     std::vector<uint> ts;
     std::string outdir = ".";
@@ -568,11 +568,12 @@ void set_bc(cons_array_t &u, const prim_array_t& p, int ng, const Config& config
     // auto il = index_space(ivec(0), uvec(ng));
     // auto ir = index_space(ivec(u.size() - ng), uvec(ng));
 
-    if (bcl == 'f' && bcr == 'f')
+    if (bcl == 'o' && bcr == 'f')
     {
+        auto pl = p[ng];
+
         for (int i = 0; i < ng; ++i)
         {
-            auto pl = p[i];
             auto pr = p[p.size() - 1 - i];
 
             auto ul = prim_to_cons(pl) * geometry.cell_volume(i);
