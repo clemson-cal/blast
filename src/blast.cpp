@@ -691,7 +691,7 @@ static State next_plm(const State& state, const Config& config, prim_array_t& p,
     // volumes at the present time level.
     if (p.space() == u.space())
     {
-        set_bc(u, p, 1, config, g);
+        set_bc(u, p, 2, config, g);
     }
 
     if (prim_dirty) {
