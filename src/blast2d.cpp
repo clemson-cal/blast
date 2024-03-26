@@ -271,6 +271,7 @@ struct Config
     double shell_u = 10.; // four-velocity at the leading edge of the shell
     double shell_r = 0.1; // radius of the leading edge of the shell at the start time
     double shell_n = 1.0; // comoving density at the leading edge of the shell
+    double polar_extent = 0.125; // means pi / 8; 1.0 means pole-to-pole
     dvec_t<2> domain = {0.1, 0.99};
     std::vector<uint> sp = {0, 1, 2, 3, 4, 5};
     std::vector<uint> ts;
@@ -294,6 +295,7 @@ VISITABLE_STRUCT(Config,
     shell_u,
     shell_r,
     shell_n,
+    polar_extent,
     domain,
     sp,
     ts,
@@ -324,7 +326,7 @@ struct initial_model_t
         case Setup::uniform: {
             // Uniform gas (tests spherical geometry source terms)
             //
-            return add_shell(r, q, t, vec(1.0, 0.0, 0.0, 1.0));
+            return add_shell(r, q, t, vec(1.0, 0.0, 0.0, entropy));
         }
         case Setup::wind: {
             // Steady-state cold wind, sub-relativistic velocity
@@ -385,7 +387,7 @@ struct log_spherical_geometry_t
         y0 = config.domain[0];
         y1 = config.domain[1];
         q0 = 0.0;
-        q1 = M_PI / 8.0;
+        q1 = config.polar_extent * M_PI;
         ni = int((log(y1) - log(y0)) / config.dx);
         nj = int((q1 - q0) / config.dx);
         dlogy = (log(y1) - log(y0)) / ni;

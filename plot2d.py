@@ -1,4 +1,4 @@
-from numpy import sin, cos, log10
+from numpy import sin, cos, log10, diff
 from matplotlib import pyplot as plt
 from matplotlib import animation
 from mpl_toolkits.axes_grid1 import AxesGrid
@@ -62,7 +62,7 @@ def plot_four_panel_frame(fig, filename):
         u = h5f["radial_gamma_beta"][...]
         d = h5f["comoving_mass_density"][...]
         p = h5f["gas_pressure"][...]
-        s = h5f["radial_momentum"][...] * 1e6  # how to properly normalize
+        s = h5f["radial_momentum"][...] / diff(-cos(q_faces))
     e = p / d * 3.0
     x = r_faces * sin(q_faces)
     z = r_faces * cos(q_faces)
@@ -82,10 +82,10 @@ def plot_four_panel_frame(fig, filename):
     grid[1].set_aspect("equal")
     grid[2].set_aspect("equal")
     grid[3].set_aspect("equal")
-    c0 = grid[0].pcolormesh(x, z, u, cmap="viridis", **u_range)
-    c1 = grid[1].pcolormesh(x, z, log10(e), cmap="magma", **e_range)
-    c2 = grid[2].pcolormesh(x, z, log10(d), cmap="plasma", **d_range)
-    c3 = grid[3].pcolormesh(x, z, log10(s), cmap="viridis", **s_range)
+    c0 = grid[0].pcolormesh(x, z, u, cmap="viridis")  # , **u_range)
+    c1 = grid[1].pcolormesh(x, z, log10(e), cmap="magma")  # , **e_range)
+    c2 = grid[2].pcolormesh(x, z, log10(d), cmap="plasma")  # , **d_range)
+    c3 = grid[3].pcolormesh(x, z, s, cmap="viridis")  # , **s_range)
     grid.cbar_axes[0].colorbar(c0)
     grid.cbar_axes[1].colorbar(c1)
     grid.cbar_axes[2].colorbar(c2)
