@@ -153,7 +153,7 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
         }
         if (fabs(f) < error_tolerance)
         {
-            if (p < 0.0) {
+            if (p <= 0.0) {
                 return none<prim_t>();                
             }
             w0 = w;
@@ -271,6 +271,8 @@ struct Config
     double shell_u = 10.; // four-velocity at the leading edge of the shell
     double shell_r = 0.1; // radius of the leading edge of the shell at the start time
     double shell_n = 1.0; // comoving density at the leading edge of the shell
+    double mesh_t0 = 0.0; // the time at which the radial mesh surfaces were at r=0
+    double mesh_r0 = 1.0; // the mesh radius which expands at v=c
     double polar_extent = 0.125; // means pi / 8; 1.0 means pole-to-pole
     dvec_t<2> domain = {0.1, 0.99};
     std::vector<uint> sp = {0, 1, 2, 3, 4, 5};
@@ -295,6 +297,8 @@ VISITABLE_STRUCT(Config,
     shell_u,
     shell_r,
     shell_n,
+    mesh_t0,
+    mesh_r0,
     polar_extent,
     domain,
     sp,
@@ -384,6 +388,8 @@ struct log_spherical_geometry_t
 {
     log_spherical_geometry_t(const Config& config)
     {
+        mesh_t0 = config.mesh_t0;
+        mesh_r0 = config.mesh_r0;
         y0 = config.domain[0];
         y1 = config.domain[1];
         q0 = 0.0;
@@ -395,8 +401,7 @@ struct log_spherical_geometry_t
     }
     HD double face_position_i(int i, double t) const
     {
-        // return y0 * exp(dlogy * i);
-        return face_velocity_i(i) * t;
+        return face_velocity_i(i) * (t - mesh_t0);
     }
     HD double face_position_j(int j) const
     {
@@ -404,8 +409,7 @@ struct log_spherical_geometry_t
     }
     HD double face_velocity_i(int i) const
     {
-        // return 0.0;
-        return y0 * exp(dlogy * i);
+        return y0 * exp(dlogy * i) / mesh_r0;
     }
     HD double face_area_i(ivec_t<2> index, double t) const
     {
@@ -475,6 +479,8 @@ struct log_spherical_geometry_t
         auto dz = z1 - z0;
         return M_PI * (s0 + s1) * sqrt(ds * ds + dz * dz);
     }
+    double mesh_t0;
+    double mesh_r0;
     double y0;
     double y1;
     double q0;
@@ -614,7 +620,7 @@ void update_prim(const State& state, G g, prim_array_t& p, double t)
             }
         };
         vapor::cpu_executor_t().loop(u.space(), f);
-        throw e;
+        throw;
     }
 }
 
@@ -674,7 +680,7 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
         return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
     })).cache();
 
-    auto du = indices(cells_space.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
+    auto du = indices(cells_space.nudge(vec(1, 0), vec(-1, -1))).map([=] HD (ivec_t<2> i)
     {
         auto rm = xf_i[i + vec(0, 0)];
         auto rp = xf_i[i + vec(1, 0)];
