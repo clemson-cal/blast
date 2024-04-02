@@ -275,7 +275,7 @@ struct Config
     double mesh_r0 = 1.0; // the mesh radius which expands at v=c
     double polar_extent = 0.125; // means pi / 8; 1.0 means pole-to-pole
     dvec_t<2> domain = {0.1, 0.99};
-    std::vector<uint> sp = {0, 1, 2, 3, 4, 5};
+    std::vector<uint> sp = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     std::vector<uint> ts;
     std::string outdir = ".";
     std::string setup = "uniform";
@@ -356,7 +356,7 @@ struct initial_model_t
     }
     HD prim_t add_shell(double r, double q, double t, prim_t bg_prim) const
     {
-        if (r < shell_r && t == tstart) {
+        if (r < shell_r && t == tstart && false) {
             auto shell_p = entropy * pow(shell_n, gamma_law);
             auto shell_prim = prim_t{
                 shell_n,
@@ -627,7 +627,7 @@ void update_prim(const State& state, G g, prim_array_t& p, double t)
 
 
 
-static State next(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+static State next(const State& state, const Config& config, prim_array_t& prim_array, double dt, int prim_dirty)
 {
     auto t = state.time;
     auto u = state.cons;
@@ -643,26 +643,34 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
     auto plm_theta = config.theta;
 
     if (prim_dirty) {
-        update_prim(state, g, p, t);
+        update_prim(state, g, prim_array, t);
     }
 
-    auto grad_i = zeros<cons_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
+    auto model = initial_model_t(config);
+    auto model_p = indices(cells_space.expand(uvec(2, 2))).map([=] HD (ivec_t<2> i)
+    {
+        auto x = g.cell_position(i, t);
+        return model.initial_primitive(x[0], x[1], t);
+    });
+    auto p = model_p.insert(prim_array);
+
+    auto grad_i = indices(cells_space.expand(uvec(1, 1))).map([=] HD (ivec_t<2> i)
     {
         auto pl = p[i - vec(1, 0)];
         auto pc = p[i];
         auto pr = p[i + vec(1, 0)];
         return plm_minmod(pl, pc, pr, plm_theta);
-    })).cache();
+    }).cache();
 
-    auto grad_j = zeros<cons_t>(cells_space).insert(indices(cells_space.contract(uvec(1, 1))).map([=] HD (ivec_t<2> i)
+    auto grad_j = indices(cells_space.expand(uvec(1, 1))).map([=] HD (ivec_t<2> i)
     {
         auto pl = p[i - vec(0, 1)];
         auto pc = p[i];
         auto pr = p[i + vec(0, 1)];
         return plm_minmod(pl, pc, pr, plm_theta);
-    })).cache();
+    }).cache();
 
-    auto fhat_i = indices(faces_space_i.contract(uvec(1, 0))).map([=] HD (ivec_t<2> i)
+    auto fhat_i = indices(faces_space_i).map([=] HD (ivec_t<2> i)
     {
         auto pl = p[i - vec(1, 0)] + grad_i[i - vec(1, 0)] * 0.5;
         auto pr = p[i - vec(0, 0)] - grad_i[i - vec(0, 0)] * 0.5;
@@ -671,16 +679,16 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
         return riemann_hlle(pl, pr, ul, ur, 0, vf_i[i]);
     }).cache();
 
-    auto fhat_j = zeros<cons_t>(faces_space_j).insert(indices(faces_space_j.contract(uvec(0, 1))).map([=] HD (ivec_t<2> i)
+    auto fhat_j = indices(faces_space_j).map([=] HD (ivec_t<2> i)
     {
         auto pl = p[i - vec(0, 1)] + grad_j[i - vec(0, 1)] * 0.5;
         auto pr = p[i - vec(0, 0)] - grad_j[i - vec(0, 0)] * 0.5;
         auto ul = prim_to_cons(pl);
         auto ur = prim_to_cons(pr);
         return riemann_hlle(pl, pr, ul, ur, 1, 0.0);
-    })).cache();
+    }).cache();
 
-    auto du = indices(cells_space.nudge(vec(1, 0), vec(-1, -1))).map([=] HD (ivec_t<2> i)
+    auto du = indices(cells_space).map([=] HD (ivec_t<2> i)
     {
         auto rm = xf_i[i + vec(0, 0)];
         auto rp = xf_i[i + vec(1, 0)];
@@ -698,15 +706,7 @@ static State next(const State& state, const Config& config, prim_array_t& p, dou
         return fm_i * am_i - fp_i * ap_i + fm_j * am_j - fp_j * ap_j + udot;
     }) * dt;
 
-    auto model = initial_model_t(config);
-    auto model_u = indices(cells_space).map([=] HD (ivec_t<2> i)
-    {
-        auto x = g.cell_position(i, t);
-        auto p = model.initial_primitive(x[0], x[1], t);
-        auto u = prim_to_cons(p);
-        return u * g.cell_volume(i, t);
-    });
-    auto u1 = model_u.insert(u.add(du));
+    auto u1 = u + du;
 
     return State{
         state.time + dt,
@@ -844,6 +844,7 @@ public:
         case 7: return "radial_momentum";
         case 8: return "polar_momentum";
         case 9: return "energy";
+        case 10: return "energy_cold";
         }
         return nullptr;
     }
@@ -861,6 +862,11 @@ public:
                 return cons_to_prim(u).get()[n];
             };
         };
+        auto energy_cold = [] HD (cons_t u) {
+            auto p = cons_to_prim(u).get();
+            p[3] = 0.0;
+            return prim_to_cons(p)[3];
+        };
         switch (column) {
         case 0: return (u / dv).map(cons_field(0)).cache();
         case 1: return (u / dv).map(cons_field(1)).cache();
@@ -872,6 +878,7 @@ public:
         case 7: return u.map([] HD (cons_t u) { return u[1]; }).cache();
         case 8: return u.map([] HD (cons_t u) { return u[2]; }).cache();
         case 9: return u.map([] HD (cons_t u) { return u[3]; }).cache();
+        case 10: return ((u / dv).map(energy_cold) * dv).cache();
         }
         return {};
     }

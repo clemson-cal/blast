@@ -1,4 +1,4 @@
-from numpy import sin, cos, log10, diff
+from numpy import sin, cos, log10, diff, pi
 from matplotlib import pyplot as plt
 from matplotlib import animation
 from mpl_toolkits.axes_grid1 import AxesGrid
@@ -135,6 +135,25 @@ def plot_four_panel_frame(fig, filename):
     grid[0].set_ylabel(r"$z / r_{\rm shell}$")
     grid[2].set_ylabel(r"$z / r_{\rm shell}$")
     fig.subplots_adjust(left=0.05, right=0.95, bottom=0.05, top=0.95)
+
+
+@app.command()
+def polar_dist(
+    filename: str, figsize: tuple[int, int] = (12, 10), field: str = "energy"
+):
+    labels = dict(mass="M", energy="E", energy_cold=r"E_{\rm cold}")
+    print(f"load {filename}")
+    fig = plt.figure(figsize=figsize)
+    with File(filename, "r") as h5f:
+        q_faces = h5f["face_positions_j"][0, :]
+        F = h5f[field][...]
+    print(f"total: {F.sum()}")
+    f = (F / diff(-cos(q_faces))).sum(axis=0)
+    ax1 = fig.add_subplot(111)
+    ax1.step(q_faces[:-1] * 180 / pi, f)
+    ax1.set_xlabel(r"Polar angle $\theta$ [deg]")
+    ax1.set_ylabel(rf"$d{labels[field]} / d\Omega$")
+    plt.show()
 
 
 @app.command()
