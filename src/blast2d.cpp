@@ -314,6 +314,7 @@ struct initial_model_t
 {
     initial_model_t(const Config& config)
     : setup(setup_from_string(config.setup))
+    , include_shell(config.shell_u != 0.0)
     , tstart(config.tstart)
     , entropy(config.entropy)
     , shell_w(config.shell_w)
@@ -356,7 +357,7 @@ struct initial_model_t
     }
     HD prim_t add_shell(double r, double q, double t, prim_t bg_prim) const
     {
-        if (r < shell_r && t == tstart && false) {
+        if (r < shell_r && t == tstart && include_shell) {
             auto shell_p = entropy * pow(shell_n, gamma_law);
             auto shell_prim = prim_t{
                 shell_n,
@@ -372,6 +373,7 @@ struct initial_model_t
         }
     }
     Setup setup;
+    bool include_shell;
     double tstart;
     double entropy;
     double shell_w; // shell width over radius

@@ -128,7 +128,7 @@ def plot_four_panel_frame(fig, filename):
     grid.cbar_axes[3].colorbar(c3)
     grid.cbar_axes[0].axis["top"].set_label(r"$\gamma \beta_r$")
     grid.cbar_axes[1].axis["top"].set_label(r"$log_{10} e$")
-    grid.cbar_axes[2].axis["top"].set_label(r"Comoving mass density $\rho$")
+    grid.cbar_axes[2].axis["top"].set_label(r"Comoving mass density $log_{10}\rho$")
     grid.cbar_axes[3].axis["top"].set_label(r"Radial Momentum")
     grid[2].set_xlabel(r"$x / r_{\rm shell}$")
     grid[3].set_xlabel(r"$x / r_{\rm shell}$")
@@ -139,7 +139,10 @@ def plot_four_panel_frame(fig, filename):
 
 @app.command()
 def polar_dist(
-    filename: str, figsize: tuple[int, int] = (12, 10), field: str = "energy"
+    filename: str,
+    figsize: tuple[int, int] = (12, 10),
+    field: str = "energy",
+    no_plot: bool = False,
 ):
     labels = dict(mass="M", energy="E", energy_cold=r"E_{\rm cold}")
     print(f"load {filename}")
@@ -149,11 +152,12 @@ def polar_dist(
         F = h5f[field][...]
     print(f"total: {F.sum()}")
     f = (F / diff(-cos(q_faces))).sum(axis=0)
-    ax1 = fig.add_subplot(111)
-    ax1.step(q_faces[:-1] * 180 / pi, f)
-    ax1.set_xlabel(r"Polar angle $\theta$ [deg]")
-    ax1.set_ylabel(rf"$d{labels[field]} / d\Omega$")
-    plt.show()
+    if not no_plot:
+        ax1 = fig.add_subplot(111)
+        ax1.step(q_faces[:-1] * 180 / pi, f)
+        ax1.set_xlabel(r"Polar angle $\theta$ [deg]")
+        ax1.set_ylabel(rf"$d{labels[field]} / d\Omega$")
+        plt.show()
 
 
 @app.command()
