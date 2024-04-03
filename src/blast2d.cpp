@@ -339,7 +339,7 @@ struct initial_model_t
             auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
             auto u = 1.0; // wind gamma-beta
             auto d = f / (r * r * u);
-            auto p = entropy * pow(shell_n, gamma_law);
+            auto p = entropy * d;
             return add_shell(r, q, t, vec(d, u, 0.0, p));
         }
         case Setup::envelope: {
@@ -349,7 +349,7 @@ struct initial_model_t
             auto m = envelope.shell_mass_rt(r, t);
             auto d = envelope.shell_density_mt(m, t);
             auto u = envelope.shell_gamma_beta_m(m);
-            auto p = entropy * pow(shell_n, gamma_law);
+            auto p = entropy * d;
             return add_shell(r, q, t, vec(d, u, 0.0, p));
         }
         default: return {};
@@ -358,7 +358,7 @@ struct initial_model_t
     HD prim_t add_shell(double r, double q, double t, prim_t bg_prim) const
     {
         if (r < shell_r && t == tstart && include_shell) {
-            auto shell_p = entropy * pow(shell_n, gamma_law);
+            auto shell_p = entropy * shell_n;
             auto shell_prim = prim_t{
                 shell_n,
                 shell_u,
@@ -859,7 +859,7 @@ public:
         auto xf_i = indices(index_space(vec(0, 0), uvec(g.ni + 1, 1))).map([=] HD (ivec_t<2> i) { return g.face_position_i(i[0], t); });
         auto xf_j = indices(index_space(vec(0, 0), uvec(1, g.nj + 1))).map([=] HD (ivec_t<2> i) { return g.face_position_j(i[1]); });
         auto dv = ic.map([g, t] HD (ivec_t<2> i) { return g.cell_volume(i, t); });
-        auto cons_field = [] (uint n) {
+        auto prim_field = [] (uint n) {
             return [n] HD (cons_t u) {
                 return cons_to_prim(u).get()[n];
             };
@@ -870,10 +870,10 @@ public:
             return prim_to_cons(p)[3];
         };
         switch (column) {
-        case 0: return (u / dv).map(cons_field(0)).cache();
-        case 1: return (u / dv).map(cons_field(1)).cache();
-        case 2: return (u / dv).map(cons_field(2)).cache();
-        case 3: return (u / dv).map(cons_field(3)).cache();
+        case 0: return (u / dv).map(prim_field(0)).cache();
+        case 1: return (u / dv).map(prim_field(1)).cache();
+        case 2: return (u / dv).map(prim_field(2)).cache();
+        case 3: return (u / dv).map(prim_field(3)).cache();
         case 4: return xf_i.cache();
         case 5: return xf_j.cache();
         case 6: return u.map([] HD (cons_t u) { return u[0]; }).cache();
