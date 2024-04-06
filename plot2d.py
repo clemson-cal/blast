@@ -139,34 +139,60 @@ def plot_four_panel_frame(fig, filename):
 
 @app.command()
 def polar_dist(
-    filename: str,
+    filenames: list[str],
     figsize: tuple[int, int] = (12, 10),
     field: str = "energy",
     no_plot: bool = False,
 ):
-    labels = dict(mass="M", energy="E", energy_cold=r"E_{\rm cold}")
-    print(f"load {filename}")
+    labels = dict(
+        mass="M",
+        energy="E",
+        energy_cold=r"E_{\rm cold}",
+        energy_thermal=r"E_{\rm th}",
+    )
     fig = plt.figure(figsize=figsize)
-    with File(filename, "r") as h5f:
-        q_faces = h5f["face_positions_j"][0, :]
-        F = h5f[field][...]
-    print(f"total: {F.sum()}")
-    f = (F / diff(-cos(q_faces))).sum(axis=0)
-    if not no_plot:
-        ax1 = fig.add_subplot(111)
-        ax1.step(q_faces[:-1] * 180 / pi, f)
-        ax1.set_xlabel(r"Polar angle $\theta$ [deg]")
-        ax1.set_ylabel(rf"$d{labels[field]} / d\Omega$")
-        plt.show()
+    ax1 = fig.add_subplot(111)
+
+    def color(n):
+        return (0.1 + 0.8 * n / len(filenames),) * 3
+
+    def get(h5f, name):
+        if name == "energy_thermal":
+            return h5f["energy"][...] - h5f["energy_cold"][...]
+        else:
+            return h5f[name][...]
+
+    for n, filename in enumerate(filenames):
+        print(f"load {filename}")
+        with File(filename, "r") as h5f:
+            time = h5f["__time__"][...]
+            q_faces = h5f["face_positions_j"][0, :]
+            F = get(h5f, field)[...]
+        print(f"total: {F.sum()}")
+        f = (F / diff(-cos(q_faces))).sum(axis=0)
+        if not no_plot:
+            ax1.plot(
+                q_faces[:-1] * 180 / pi,
+                f,
+                label=rf"$t={time:.1f}$ sec",
+                c=color(n),
+                lw=2,
+            )
+    ax1.set_yscale("log")
+    ax1.set_xlabel(r"Polar angle $\theta$ [deg]")
+    ax1.set_ylabel(rf"$d{labels[field]} / d\Omega$")
+    ax1.legend()
+    plt.show()
 
 
 @app.command()
-def frame(filename: str, figsize: tuple[int, int] = (12, 10), panels: int = 4):
-    fig = plt.figure(figsize=figsize)
-    if panels == 1:
-        plot_one_panel_frame(fig, filename)
-    if panels == 4:
-        plot_four_panel_frame(fig, filename)
+def frame(filenames: list[str], figsize: tuple[int, int] = (12, 10), panels: int = 4):
+    for filename in filenames:
+        fig = plt.figure(figsize=figsize)
+        if panels == 1:
+            plot_one_panel_frame(fig, filename)
+        if panels == 4:
+            plot_four_panel_frame(fig, filename)
     plt.show()
 
 
