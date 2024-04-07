@@ -12,7 +12,14 @@ d_range = dict(vmin=-3.5, vmax=-0.5)
 s_range = dict(vmin=-3.0, vmax=+2.2)
 
 
-def plot_one_panel_frame(fig, filename):
+def get(h5f, name):
+    if name == "energy_thermal":
+        return get(h5f, "energy") - get(h5f, "energy_cold")
+    else:
+        return h5f[name][...]
+
+
+def plot_one_panel_frame(fig, filename, field: str = "comoving_mass_density"):
     """
     Plot a one-panel image frame from a products file
     """
@@ -20,11 +27,7 @@ def plot_one_panel_frame(fig, filename):
     with File(filename, "r") as h5f:
         r_faces = h5f["face_positions_i"][...]
         q_faces = h5f["face_positions_j"][...]
-        u = h5f["radial_gamma_beta"][...]
-        d = h5f["comoving_mass_density"][...]
-        p = h5f["gas_pressure"][...]
-        s = h5f["radial_momentum"][...] / diff(-cos(q_faces))
-    e = p / d * 3.0
+        f = get(h5f, field)
     x = r_faces * sin(q_faces)
     z = r_faces * cos(q_faces)
     grid = AxesGrid(
@@ -40,7 +43,7 @@ def plot_one_panel_frame(fig, filename):
         cbar_pad="0%",
     )
     grid[0].set_aspect("equal")
-    c0 = grid[0].pcolormesh(x, z, u, cmap="viridis", edgecolors="none")
+    c0 = grid[0].pcolormesh(x, z, e, cmap="viridis", edgecolors="none")
     grid.cbar_axes[0].colorbar(c0)
     grid.cbar_axes[0].axis["top"].set_label(r"$\gamma \beta_r$")
     grid[0].set_xlabel(r"$x / r_{\rm shell}$")
@@ -156,18 +159,12 @@ def polar_dist(
     def color(n):
         return (0.1 + 0.8 * n / len(filenames),) * 3
 
-    def get(h5f, name):
-        if name == "energy_thermal":
-            return h5f["energy"][...] - h5f["energy_cold"][...]
-        else:
-            return h5f[name][...]
-
     for n, filename in enumerate(filenames):
         print(f"load {filename}")
         with File(filename, "r") as h5f:
             time = h5f["__time__"][...]
             q_faces = h5f["face_positions_j"][0, :]
-            F = get(h5f, field)[...]
+            F = get(h5f, field)
         print(f"total: {F.sum()}")
         f = (F / diff(-cos(q_faces))).sum(axis=0)
         if not no_plot:
@@ -186,11 +183,16 @@ def polar_dist(
 
 
 @app.command()
-def frame(filenames: list[str], figsize: tuple[int, int] = (12, 10), panels: int = 4):
+def frame(
+    filenames: list[str],
+    figsize: tuple[int, int] = (12, 10),
+    panels: int = 4,
+    field: str = "comoving_mass_density",
+):
     for filename in filenames:
         fig = plt.figure(figsize=figsize)
         if panels == 1:
-            plot_one_panel_frame(fig, filename)
+            plot_one_panel_frame(fig, filename, field=field)
         if panels == 4:
             plot_four_panel_frame(fig, filename)
     plt.show()
