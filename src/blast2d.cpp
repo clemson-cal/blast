@@ -610,7 +610,6 @@ void update_prim(const State& state, G g, prim_array_t& p, double t)
             return cons_to_prim(ui, pi[3]);
         }).cache_unwrap();
     } catch (const std::exception& e) {
-        // auto exec = vapor::cpu_executor_t();
         auto t = state.time;
         auto u = state.cons;
         auto f = [=] HD (ivec_t<2> i) {
