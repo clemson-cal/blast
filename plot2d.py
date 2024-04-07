@@ -19,6 +19,14 @@ def get(h5f, name):
         return h5f[name][...]
 
 
+labels = dict(
+    mass="M",
+    energy="E",
+    energy_cold=r"E_{\rm cold}",
+    energy_thermal=r"E_{\rm th}",
+)
+
+
 def plot_one_panel_frame(fig, filename, field: str = "comoving_mass_density"):
     """
     Plot a one-panel image frame from a products file
@@ -43,9 +51,9 @@ def plot_one_panel_frame(fig, filename, field: str = "comoving_mass_density"):
         cbar_pad="0%",
     )
     grid[0].set_aspect("equal")
-    c0 = grid[0].pcolormesh(x, z, e, cmap="viridis", edgecolors="none")
+    c0 = grid[0].pcolormesh(x, z, f, cmap="viridis", edgecolors="none")
     grid.cbar_axes[0].colorbar(c0)
-    grid.cbar_axes[0].axis["top"].set_label(r"$\gamma \beta_r$")
+    grid.cbar_axes[0].axis["top"].set_label(labels[field])
     grid[0].set_xlabel(r"$x / r_{\rm shell}$")
     grid[0].set_ylabel(r"$z / r_{\rm shell}$")
     fig.subplots_adjust(left=0.05, right=0.95, bottom=0.05, top=0.95)
@@ -147,12 +155,6 @@ def polar_dist(
     field: str = "energy",
     no_plot: bool = False,
 ):
-    labels = dict(
-        mass="M",
-        energy="E",
-        energy_cold=r"E_{\rm cold}",
-        energy_thermal=r"E_{\rm th}",
-    )
     fig = plt.figure(figsize=figsize)
     ax1 = fig.add_subplot(111)
 
