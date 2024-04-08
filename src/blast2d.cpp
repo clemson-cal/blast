@@ -276,7 +276,7 @@ struct Config
     double polar_extent = 0.125; // means pi / 8; 1.0 means pole-to-pole
     dvec_t<2> domain = {0.1, 0.99};
     std::vector<uint> sp = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    std::vector<uint> ts;
+    std::vector<uint> ts = {0, 1, 2, 3};
     std::string outdir = ".";
     std::string setup = "uniform";
 };
@@ -891,12 +891,28 @@ public:
     {
         switch (column) {
         case 0: return "time";
+        case 1: return "mass";
+        case 2: return "energy";
+        case 3: return "energy_cold";
         }
         return nullptr;
     }
     double compute_timeseries_sample(const State& state, uint column) const override
     {
-        return state.time;
+        auto t = state.time;
+        auto u = state.cons;
+        auto energy_cold = [] HD (cons_t u) {
+            auto p = cons_to_prim(u).get();
+            p[3] = 0.0;
+            return prim_to_cons(p)[3];
+        };
+        switch (column) {
+        case 0: return t;
+        case 1: return sum(u.map([] HD (cons_t u) { return u[0]; }));
+        case 2: return sum(u.map([] HD (cons_t u) { return u[3]; }));
+        case 3: return sum(u.map(energy_cold));
+        }
+        return 0.0;
     }
     vec_t<char, 256> status_message(const State& state, double secs_per_update) const override
     {
