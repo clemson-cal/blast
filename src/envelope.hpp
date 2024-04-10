@@ -67,11 +67,7 @@ struct envelope_t
             auto dt0 = shell_time_mprime(m);
             return -(dv * (t - t0) - v * dt0);
         };
-        // The guess for m below is exact when t_delay=0, but still very
-        // accurate when t_delay=1, especially where m << m1.
-        auto s = r / t;
-        auto u = s / sqrt(1 - s * s);
-        auto m = m1 * pow(u * (1 - u_wind * u_wind / u / u) / (1 + u_wind / u), -1.0 / psi);
+        auto m = 1e-12;
         auto n = 0;
         while (true)
         {
