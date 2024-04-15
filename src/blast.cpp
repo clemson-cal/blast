@@ -289,6 +289,7 @@ struct Config
     double tsi = 0.0;
     double bmk_gamma_shock = 5.0;
     double bomb_energy = 1.0E6;
+    double bomb_eta = 50.0;
     double bomb_rho_out = 1.0;
     double shell_u = 25.0;  // ejecta gamma-beta
     double shell_e = 1e-1;  // ejecta specific internal energy
@@ -319,6 +320,7 @@ VISITABLE_STRUCT(Config,
     dx,
     bmk_gamma_shock,
     bomb_energy,
+    bomb_eta,
     bomb_rho_out,
     shell_u,
     shell_e,
@@ -839,6 +841,7 @@ public:
         auto setup = setup_from_string(config.setup);
         auto bmk_gamma_shock = config.bmk_gamma_shock;
         auto bomb_energy = config.bomb_energy;
+        auto bomb_eta = config.bomb_eta;
         auto sod_l = cast<double>(config.sod_l);
         auto sod_r = cast<double>(config.sod_r);
         auto bomb_rho_out = config.bomb_rho_out;
@@ -905,7 +908,7 @@ public:
                 }
             case Setup::bomb: {
                 auto r_in = 1.0;
-                auto bomb_mass = 1.0;
+                auto bomb_mass = bomb_energy / bomb_eta;
                 auto bomb_volume = 4.0 / 3.0 * M_PI * pow(r_in, 3.0);
                 auto bomb_rho_in = bomb_mass / bomb_volume;
                 auto p_in = bomb_energy / bomb_volume * (gamma_law - 1.0);
