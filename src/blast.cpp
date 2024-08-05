@@ -25,6 +25,7 @@ SOFTWARE.
 #include <cmath>
 #include <functional>
 #include "vapor/vapor.hpp"
+#include "envelope.hpp"
 
 
 
@@ -184,7 +185,7 @@ HD static auto outer_wavespeeds(prim_t p, int axis) -> dvec_t<2>
     return vec(vn - k0, vn + k0) / (1.0 + s2);
 }
 
-HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_t
+HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur, double v_face) -> cons_t
 {
     auto fl = prim_and_cons_to_flux(pl, ul, 0);
     auto fr = prim_and_cons_to_flux(pr, ur, 0);
@@ -204,8 +205,8 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     auto alp = (vl + cl) / (1.0 + vl * cl);
     auto arm = (vr - cr) / (1.0 - vr * cr);
     auto arp = (vr + cr) / (1.0 + vr * cr);
-    auto am = min3(0.0, alm, arm);
-    auto ap = max3(0.0, alp, arp);
+    auto am = min2(alm, arm);
+    auto ap = max2(alp, arp);
     (void)outer_wavespeeds; // silence unused function warning
     // These wave speed estimates are from Schneider et al. (1993):
     //
@@ -213,7 +214,15 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur) -> cons_
     // auto cs = 0.5 * (cl + cr);
     // auto am = min2(0.0, (vb - cs) / (1.0 - vb * cs));
     // auto ap = max2(0.0, (vb + cs) / (1.0 + vb * cs));
-    return (fl * ap - fr * am - (ul - ur) * ap * am) / (ap - am);
+    if (v_face < am) {
+        return fl - ul * v_face;
+    }
+    if (v_face > ap) {
+        return fr - ur * v_face;
+    }
+    auto u_hll = (ur * ap - ul * am + (fl - fr)) / (ap - am);
+    auto f_hll = (fl * ap - fr * am - (ul - ur) * ap * am) / (ap - am);
+    return f_hll - u_hll * v_face;
 };
 
 HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1)
@@ -227,8 +236,6 @@ HD static auto spherical_geometry_source_terms(prim_t p, double r0, double r1)
 }
 
 
-
-
 enum class Setup
 {
     uniform,
@@ -238,6 +245,8 @@ enum class Setup
     bmk,
     bomb,
     shell,
+    envelope,
+    power_law,
 };
 static Setup setup_from_string(const std::string& name)
 {
@@ -248,6 +257,8 @@ static Setup setup_from_string(const std::string& name)
     if (name == "bmk") return Setup::bmk;
     if (name == "bomb") return Setup::bomb;
     if (name == "shell") return Setup::shell;
+    if (name == "envelope") return Setup::envelope;
+    if (name == "power_law") return Setup::power_law;
     throw std::runtime_error("unknown setup " + name);
 }
 
@@ -274,6 +285,7 @@ struct Config
     int fold = 50;
     int rk = 2;
     double theta = 1.5;
+    double tstart = 0.0;
     double tfinal = 0.0;
     double cfl = 0.4;
     double cpi = 0.0;
@@ -285,13 +297,16 @@ struct Config
     double shell_u = 25.0;  // ejecta gamma-beta
     double shell_e = 1e-1;  // ejecta specific internal energy
     double shell_f = 100.0; // ejecta-to-ambient-medium comoving density ratio
+    double shell_gamma = 100;
     double shell_delta = 0.1;
+    double power_law_index = 3.0;
     float dx = 1e-2;
-    vec_t<float, 3> sod_l = {{1.0, 0.0, 1.000}};
-    vec_t<float, 3> sod_r = {{0.1, 0.0, 0.125}};
+    vec_t<double, 3> sod_l = {{1.0, 0.0, 1.000}};
+    vec_t<double, 3> sod_r = {{0.1, 0.0, 0.125}};
     vec_t<float, 2> domain = {{1.0, 10.0}}; // x0, x1
+    vec_t<float, 2> move = {{0.0, 0.0}}; // speed of mesh endpoints
     vec_t<char, 2> bc = {{'f', 'f'}};
-    std::vector<uint> sp = {0, 1, 2, 3};
+    std::vector<uint> sp = {0, 1, 2, 3, 4, 5, 6, 7};
     std::vector<uint> ts;
     std::string outdir = ".";
     std::string method = "plm";
@@ -302,6 +317,7 @@ VISITABLE_STRUCT(Config,
     fold,
     rk,
     theta,
+    tstart,
     tfinal,
     cfl,
     cpi,
@@ -314,10 +330,13 @@ VISITABLE_STRUCT(Config,
     shell_u,
     shell_e,
     shell_f,
+    shell_gamma,
     shell_delta,
+    power_law_index,
     sod_l,
     sod_r,
     domain,
+    move,
     bc,
     sp,
     ts,
@@ -328,431 +347,27 @@ VISITABLE_STRUCT(Config,
 );
 
 
-
-
-struct planar_geometry_t
+struct initial_model_t
 {
-    planar_geometry_t(const Config& config)
+    initial_model_t(const Config& config)
+    : setup(setup_from_string(config.setup))
+    , include_shell(config.shell_u != 0.0)
+    , tstart(config.tstart)
+    , shell_delta(config.shell_delta)
+    , shell_u(config.shell_u)
+    , shell_f(config.shell_f)
+    , shell_e(config.shell_e)
+    , sod_l(config.sod_l)
+    , sod_r(config.sod_r)
+    , bmk_gamma_shock(config.bmk_gamma_shock)
+    , bomb_energy(config.bomb_energy)
+    , bomb_rho_out(config.bomb_rho_out)
+    , shell_gamma(config.shell_gamma)
+    , power_law_index(config.power_law_index)
     {
-        x0 = config.domain[0];
-        x1 = config.domain[1];
-        dx = (x1 - x0) / int((x1 - x0) / config.dx); // config.dx is essentially a hint
     }
-    HD double face_position(int i) const
+    HD prim_t initial_primitive(double x, double t) const
     {
-        return x0 + dx * i;
-    }
-    HD double face_area(int i) const
-    {
-        return 1.0;
-    }
-    HD double cell_position(int i) const
-    {
-        return x0 + dx * (i + 0.5);
-    }
-    HD double cell_volume(int i) const
-    {
-        return dx;
-    }
-    HD cons_t source_terms(prim_t p, double rm, double rp) const
-    {
-        return {};
-    }
-    double x0;
-    double x1;
-    double dx;
-};
-
-struct spherical_geometry_t
-{
-    spherical_geometry_t(const Config& config)
-    {
-        r0 = config.domain[0];
-        r1 = config.domain[1];
-        dr = (r1 - r0) / int((r1 - r0) / config.dx); // config.dx is essentially a hint
-    }
-    HD double face_position(int i) const
-    {
-        return r0 + dr * i;
-    }
-    HD double face_area(int i) const
-    {
-        auto r = face_position(i);
-        return r * r;
-    }
-    HD double cell_position(int i) const
-    {
-        return r0 + dr * (i + 0.5);
-    }
-    HD double cell_volume(int i) const
-    {
-        auto r0 = face_position(i + 0);
-        auto r1 = face_position(i + 1);
-        return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
-    }
-    HD cons_t source_terms(prim_t p, double rm, double rp) const
-    {
-        return spherical_geometry_source_terms(p, rm, rp);
-    }
-    double r0;
-    double r1;
-    double dr;
-};
-
-// template<class X, class A, class V, class S>
-// struct grid_geometry_t
-// {
-//     array_t<1, X> face_position;
-//     array_t<1, A> face_area;
-//     array_t<1, V> cell_volume;
-//     S geometric_source_terms;
-// };
-
-// template<class X, class A, class V, class S>
-// auto grid_geometry(
-//     array_t<1, X> face_position,
-//     array_t<1, A> face_area,
-//     array_t<1, V> cell_volume,
-//     S geometric_source_terms)
-// {
-//     return grid_geometry_t<X, A, V, S>{
-//         face_position,
-//         face_area,
-//         cell_volume,
-//         geometric_source_terms,
-//     };
-// }
-
-
-
-
-/**
- * 
- */
-struct State
-{
-    double time;
-    double iter;
-    cons_array_t cons;
-};
-VISITABLE_STRUCT(State, time, iter, cons);
-
-
-
-
-static State average(const State& a, const State& b, double x)
-{
-    return x == 1.0 ? b : State{
-        (a.time * (1.0 - x) + b.time * x),
-        (a.iter * (1.0 - x) + b.iter * x),
-        (a.cons * (1.0 - x) + b.cons * x).cache()
-    };
-}
-
-
-
-
-static void update_prim(const State& state, prim_array_t& p)
-{
-    auto u = state.cons;
-
-    if (p.space() != u.space())
-    {
-        p = zeros<prim_t>(u.space()).cache();
-    }
-    p = range(u.shape()[0]).map([p, u] HD (int i)
-    {
-        auto ui = u[i];
-        auto pi = p[i];
-        return cons_to_prim(ui, pi[2]).get();
-    }).cache();
-}
-
-
-
-
-
-template<class F>
-auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
-{
-    auto bcl = config.bc[0];
-    auto bcr = config.bc[1];
-    auto il = index_space(ivec(0), uvec(ng));
-    auto ir = index_space(ivec(u.size() - ng), uvec(ng));
-
-    if (bcl == 'f' && bcr == 'f')
-    {
-        return u.cache();
-    }
-    else if (bcl == 'f' && (bcr == 'o' || bcr == 'r'))
-    {
-        auto ur = u[u.size() - ng - 1];
-        if (bcr == 'r') ur[1] *= -1.0;
-        return u.at(ir).set(ur).cache();
-    }
-    else if ((bcl == 'o' || bcl == 'r') && bcr == 'f')
-    {
-        auto ul = u[ng];
-        if (bcl == 'r') ul[1] *= -1.0;
-        return u.at(il).set(ul).cache();
-    }
-    else if ((bcl == 'o' || bcl == 'r') && (bcr == 'o' || bcr == 'r'))
-    {
-        auto ul = u[ng];
-        auto ur = u[u.size() - ng - 1];
-        if (bcl == 'r') ul[1] *= -1.0;
-        if (bcr == 'r') ur[1] *= -1.0;
-        return u.at(il).set(ul).at(ir).set(ur).cache();
-    }
-    else
-    {
-        return u.cache();        
-    }
-}
-
-
-
-
-template<class G>
-static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
-{
-    auto u = state.cons;
-    auto g = G(config);
-    auto ic = range(u.space());
-    auto iv = range(u.space().nudge(vec(0), vec(1)));
-    auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
-    auto da = iv.map([g] HD (int i) { return g.face_area(i); });
-    auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
-    auto interior_cells = ic.space().contract(1);
-    auto interior_faces = iv.space().contract(1);
-
-    if (prim_dirty) {
-        update_prim(state, p);
-    }
-
-    auto fhat = iv[interior_faces].map([p, u] HD (int i)
-    {
-        auto ul = u[i - 1];
-        auto ur = u[i];
-        auto pl = p[i - 1];
-        auto pr = p[i];
-        return riemann_hlle(pl, pr, ul, ur);
-    }).cache();
-
-    auto du = ic[interior_cells].map([rf, da, dv, g, fhat, p] HD (int i)
-    {
-        auto rm = rf[i + 0];
-        auto rp = rf[i + 1];
-        auto am = da[i + 0];
-        auto ap = da[i + 1];
-        auto fm = fhat[i + 0];
-        auto fp = fhat[i + 1];
-        auto udot = g.source_terms(p[i], rm, rp);
-        return (fm * am - fp * ap + udot) / dv[i];
-    }) * dt;
-
-    return State{
-        state.time + dt,
-        state.iter + 1.0,
-        set_bc(u.add(du), config, 1),
-    };
-}
-
-
-
-
-template<class G>
-static State next_plm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
-{
-    auto u = state.cons;
-    auto g = G(config);
-    auto ic = range(u.space());
-    auto iv = range(u.space().nudge(vec(0), vec(1)));
-    auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
-    auto da = iv.map([g] HD (int i) { return g.face_area(i); });
-    auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
-    auto gradient_cells = ic.space().contract(1);
-    auto interior_cells = ic.space().contract(2);
-    auto interior_faces = iv.space().contract(2);
-    auto plm_theta = config.theta;
-
-    if (prim_dirty) {
-        update_prim(state, p);
-    }
-
-    auto grad = ic[gradient_cells].map([p, plm_theta] HD (int i)
-    {
-        auto pl = p[i - 1];
-        auto pc = p[i + 0];
-        auto pr = p[i + 1];
-        auto gc = prim_t{};
-
-        for (int n = 0; n < 3; ++n)
-        {
-            gc[n] = plm_minmod(pl[n], pc[n], pr[n], plm_theta);
-        }
-        return gc;
-    }).cache();
-
-    auto fhat = iv[interior_faces].map([p, grad] HD (int i)
-    {
-        auto pl = p[i - 1] + grad[i - 1] * 0.5;
-        auto pr = p[i + 0] - grad[i + 0] * 0.5;
-        auto ul = prim_to_cons(pl);
-        auto ur = prim_to_cons(pr);
-        return riemann_hlle(pl, pr, ul, ur);
-    }).cache();
-
-    auto du = ic[interior_cells].map([rf, da, dv, g, fhat, p] HD (int i)
-    {
-        auto rm = rf[i + 0];
-        auto rp = rf[i + 1];
-        auto am = da[i + 0];
-        auto ap = da[i + 1];
-        auto fm = fhat[i + 0];
-        auto fp = fhat[i + 1];
-        auto udot = g.source_terms(p[i], rm, rp);
-        return (fm * am - fp * ap + udot) / dv[i];
-    }) * dt;
-
-    return State{
-        state.time + dt,
-        state.iter + 1.0,
-        set_bc(u.add(du), config, 2),
-    };
-}
-
-
-
-
-template<class Geometry>
-static void update_state(State& state, const Config& config)
-{
-    static prim_array_t p;
-    auto next = std::function<State(State&, const Config&, prim_array_t&, double, int)>();
-
-    if (config.method == "pcm") {
-        next = next_pcm<Geometry>;
-    }
-    if (config.method == "plm") {
-        next = next_plm<Geometry>;
-    }
-    if (! next) {
-        throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
-    }
-
-    // Wavespeed calculation is presently disabled, max wave speed of c is
-    // assumed.
-    //
-    // auto wavespeed = [] HD (prim_t p) -> double
-    // {
-    //     auto a = outer_wavespeeds(p, 0);
-    //     return max2(fabs(a[0]), fabs(a[1]));
-    // };
-    // update_prim(state, p);
-
-    auto dx = config.dx;
-    auto dt = dx * config.cfl;
-    auto s0 = state;
-
-    switch (config.rk)
-    {
-        case 1: {
-            state = next(s0, config, p, dt, 1);
-            break;
-        }
-        case 2: {
-            auto s1 = average(s0, next(s0, config, p, dt, 1), 1./1);
-            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./2);
-            state = s2;
-            break;
-        }
-        case 3: {
-            auto s1 = average(s0, next(s0, config, p, dt, 1), 1./1);
-            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./4);
-            auto s3 = average(s0, next(s2, config, p, dt, 1), 2./3);
-            state = s3;
-            break;
-        }
-    }
-}
-
-
-
-
-static auto cell_coordinates(const Config& config)
-{
-    auto x0 = config.domain[0];
-    auto x1 = config.domain[1];
-    auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
-    auto dx = (x1 - x0) / ni;
-    auto ic = range(ni);
-    auto xc = (ic + 0.5) * dx + x0;
-    return xc;
-}
-
-// static auto face_coordinates(const Config& config)
-// {
-//     auto x0 = config.domain[0];
-//     auto x1 = config.domain[1];
-//     auto ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
-//     auto dx = (x1 - x0) / ni;
-//     auto ic = range(ni + 1);
-//     auto xc = ic * dx + x0;
-//     return xc;
-// }
-
-
-
-
-/**
- * 
- */
-class Blast : public Simulation<Config, State, Product>
-{
-public:
-    const char* name() const override
-    {
-        return "blast";
-    }
-    const char* author() const override
-    {
-        return "Jonathan Zrake (Clemson)";
-    }
-    const char* description() const override
-    {
-        return "GPU-accelerated hydrodynamics code for relativistic explosions";
-    }
-    const char* output_directory() const override
-    {
-        return config.outdir.data();
-    }
-    bool use_persistent_session() const override
-    {
-        return false;
-    }
-    double get_time(const State& state) const override
-    {
-        return state.time;
-    }
-    uint get_iteration(const State& state) const override
-    {
-        return round(state.iter);
-    }
-    void initial_state(State& state) const override
-    {
-        auto setup = setup_from_string(config.setup);
-        auto bmk_gamma_shock = config.bmk_gamma_shock;
-        auto bomb_energy = config.bomb_energy;
-        auto sod_l = cast<double>(config.sod_l);
-        auto sod_r = cast<double>(config.sod_r);
-        auto bomb_rho_out = config.bomb_rho_out;
-        auto shell_u = config.shell_u;
-        auto shell_e = config.shell_e;
-        auto shell_f = config.shell_f;
-        auto shell_delta = config.shell_delta;
-        auto initial_primitive = [=] HD (double x) -> prim_t
-        {
             switch (setup)
             {
             case Setup::uniform: {
@@ -825,7 +440,7 @@ public:
                 auto rho_out = 1.0;
                 auto p_out = rho_out * 1e-6;
                 auto r_in = 1.0;
-                auto rho_in = rho_out * (1. + shell_f * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.));
+                auto rho_in = rho_out * shell_f * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
                 auto u_in = shell_u * exp(-pow(x - r_in, 2.) / pow(shell_delta, 2.) / 2.);
                 auto p_in = rho_in * shell_e * (gamma_law - 1.);
                 if (x < r_in) {
@@ -834,29 +449,550 @@ public:
                     return vec(rho_out, 0.0, p_out);
                 }
             }
+            case Setup::envelope: {
+                auto envelope = envelope_t();
+                auto r = x;
+                auto t = tstart;
+                auto m = envelope.shell_mass_rt(r, t);
+                auto d = envelope.shell_density_mt(m, t);
+                auto u = envelope.shell_gamma_beta_m(m);
+                auto p = 1e-6 * d;
+                return vec(d, u, p);
+            }
+            case Setup::power_law: {
+                auto rho_out = 1 / (pow(x,power_law_index));
+                auto p_out = rho_out * 1e-6;
+                auto r_in = 1.0;
+                auto p_in = 4 * pow(shell_gamma,2) / 3;
+                auto shell_gamma_beta = sqrt(pow(shell_gamma,2) - 1);
+                if ((x < r_in) && (x > (r_in - shell_delta)) && (include_shell) && (t == tstart)) {
+                    return vec(shell_f, shell_gamma_beta, p_in);
+                } else {
+                    return vec(rho_out, 0.0, p_out);
+                }
+            }
             default: return {};
             }
-        };
-        auto initial_conserved = [=] HD (double x) { return prim_to_cons(initial_primitive(x)); };
+    }
+    Setup setup;
+    bool include_shell;
+    double tstart;
+    double shell_delta; // shell width over radius
+    double shell_u; // four-velocity at the leading edge of the shell
+    double shell_f;
+    double shell_e;
+    vec_t<double, 3> sod_l;
+    vec_t<double, 3> sod_r;
+    double bmk_gamma_shock;
+    double bomb_energy;
+    double bomb_rho_out;
+    double shell_gamma;
+    double power_law_index;
+};
+            
+struct planar_geometry_t
+{
+    planar_geometry_t(const Config& config, double t) : t(t)
+    {
+        x0 = config.domain[0];
+        x1 = config.domain[1];
+        v0 = config.move[0];
+        v1 = config.move[1];
+        ni = int((x1 - x0) / config.dx); // config.dx is essentially a hint
+        dx = (x1 - x0) / ni;
+    }
+    HD double face_position(int i) const
+    {
+        return x0 + dx * i + face_velocity(i) * t;
+    }
+    HD double face_area(int i) const
+    {
+        return 1.0;
+    }
+    HD double face_velocity(int i) const
+    {
+        auto y = double(i) / ni;
+        return y * v1 + (1.0 - y) * v0;
+    }
+    HD double cell_position(int i) const
+    {
+        return 0.5 * (face_position(i) + face_position(i + 1));
+    }
+    HD double cell_volume(int i) const
+    {
+        return face_position(i + 1) - face_position(i);
+    }
+    HD cons_t source_terms(prim_t p, double rm, double rp) const
+    {
+        return {};
+    }
+    index_space_t<1> cells_space() const
+    {
+        return range(ni).space();
+    }
+    double x0;
+    double x1;
+    double dx;
+    double v0;
+    double v1;
+    double t;
+    int ni;
+};
+
+struct spherical_geometry_t
+{
+    spherical_geometry_t(const Config& config, double t) : t(t)
+    {
+        r0 = config.domain[0];
+        r1 = config.domain[1];
+        v0 = config.move[0];
+        v1 = config.move[1];
+        ni = int((r1 - r0) / config.dx); // config.dx is essentially a hint
+        dr = (r1 - r0) / ni;
+    }
+    HD double face_position(int i) const
+    {
+        return r0 + dr * i + face_velocity(i) * t;
+    }
+    HD double face_area(int i) const
+    {
+        auto r = face_position(i);
+        return r * r;
+    }
+    HD double face_velocity(int i) const
+    {
+        auto y = double(i) / ni;
+        return y * v1 + (1.0 - y) * v0;
+    }
+    HD double cell_position(int i) const
+    {
+        return 0.5 * (face_position(i) + face_position(i + 1));
+    }
+    HD double cell_volume(int i) const
+    {
+        auto r0 = face_position(i + 0);
+        auto r1 = face_position(i + 1);
+        return (r1 * r1 * r1 - r0 * r0 * r0) / 3.0;
+    }
+    HD cons_t source_terms(prim_t p, double rm, double rp) const
+    {
+        return spherical_geometry_source_terms(p, rm, rp);
+    }
+    index_space_t<1> cells_space() const
+
+    {
+        return range(ni).space();
+    }
+    double r0;
+    double r1;
+    double dr;
+    double v0;
+    double v1;
+    double t;
+    int ni;
+};
+
+struct grid_geometry_t
+{
+    grid_geometry_t(const Config& config, double t)
+    : coords(coords_from_string(config.coords))
+    , planar(config, t)
+    , spherical(config, t) {
+    }
+    HD double face_position(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.face_position(i);
+        case CoordinateSystem::spherical: return spherical.face_position(i);
+        }
+        return 0.0;
+    }
+    HD double face_area(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.face_area(i);
+        case CoordinateSystem::spherical: return spherical.face_area(i);
+        }
+        return 0.0;
+    }
+    HD double face_velocity(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.face_velocity(i);
+        case CoordinateSystem::spherical: return spherical.face_velocity(i);
+        }
+        return 0.0;
+    }
+    HD double cell_position(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.cell_position(i);
+        case CoordinateSystem::spherical: return spherical.cell_position(i);
+        }
+        return 0.0;
+    }
+    HD double cell_volume(int i) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.cell_volume(i);
+        case CoordinateSystem::spherical: return spherical.cell_volume(i);
+        }
+        return 0.0;
+    }
+    HD cons_t source_terms(prim_t p, double rm, double rp) const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.source_terms(p, rm, rp);
+        case CoordinateSystem::spherical: return spherical.source_terms(p, rm, rp);
+        }
+        return {};
+    }
+    index_space_t<1> cells_space() const
+    {
+        switch (coords) {
+        case CoordinateSystem::planar: return planar.cells_space();
+        case CoordinateSystem::spherical: return spherical.cells_space();
+        }
+        return {};
+    }
+    CoordinateSystem coords;
+    planar_geometry_t planar;
+    spherical_geometry_t spherical;
+};
+
+
+
+
+/**
+ * 
+ */
+struct State
+{
+    double time;
+    double iter;
+    cons_array_t cons;
+};
+VISITABLE_STRUCT(State, time, iter, cons);
+
+
+
+
+static State average(const State& a, const State& b, double x)
+{
+    return x == 1.0 ? b : State{
+        (a.time * (1.0 - x) + b.time * x),
+        (a.iter * (1.0 - x) + b.iter * x),
+        (a.cons * (1.0 - x) + b.cons * x).cache()
+    };
+}
+
+
+
+
+template<typename G>
+void update_prim(const State& state, G g, prim_array_t& p)
+{
+    auto u = state.cons;
+
+    if (p.space() != u.space())
+    {
+        p = zeros<prim_t>(u.space()).cache();
+    }
+    p = range(u.space()).map([p, u, g] HD (int i)
+    {
+        auto dv = g.cell_volume(i);
+        auto ui = u[i] / dv;
+        auto pi = p[i];
+        return cons_to_prim(ui, pi[2]).get();
+    }).cache();
+}
+
+
+
+
+template<class F>
+auto set_bc(const array_t<1, F> &u, const Config& config, int ng)
+{
+    auto bcl = config.bc[0];
+    auto bcr = config.bc[1];
+    auto il = index_space(ivec(0), uvec(ng));
+    auto ir = index_space(ivec(u.size() - ng), uvec(ng));
+
+    if (bcl == 'f' && bcr == 'f')
+    {
+        return u.cache();
+    }
+    else if (bcl == 'f' && (bcr == 'o' || bcr == 'r'))
+    {
+        auto ur = u[u.size() - ng - 1];
+        if (bcr == 'r') ur[1] *= -1.0;
+        return u.at(ir).set(ur).cache();
+    }
+    else if ((bcl == 'o' || bcl == 'r') && bcr == 'f')
+    {
+        auto ul = u[ng];
+        if (bcl == 'r') ul[1] *= -1.0;
+        return u.at(il).set(ul).cache();
+    }
+    else if ((bcl == 'o' || bcl == 'r') && (bcr == 'o' || bcr == 'r'))
+    {
+        auto ul = u[ng];
+        auto ur = u[u.size() - ng - 1];
+        if (bcl == 'r') ul[1] *= -1.0;
+        if (bcr == 'r') ur[1] *= -1.0;
+        return u.at(il).set(ul).at(ir).set(ur).cache();
+    }
+    else
+    {
+        return u.cache();        
+    }
+}
+
+
+
+
+template<class G>
+static State next_pcm(const State& state, const Config& config, prim_array_t& p, double dt, int prim_dirty)
+{
+    auto u = state.cons;
+    auto g = G(config, state.time);
+    auto ic = range(u.space());
+    auto iv = range(u.space().nudge(vec(0), vec(1)));
+    auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
+    auto vf = iv.map([g] HD (int i) { return g.face_velocity(i); });
+    auto da = iv.map([g] HD (int i) { return g.face_area(i); });
+    auto dv = iv.map([g] HD (int i) { return g.cell_volume(i); });
+    auto interior_cells = ic.space().contract(1);
+    auto interior_faces = iv.space().contract(1);
+
+    if (prim_dirty) {
+        update_prim(state, g, p);
+    }
+
+    auto fhat = iv[interior_faces].map([p, u, dv, vf] HD (int i)
+    {
+        auto ul = u[i - 1] / dv[i - 1];
+        auto ur = u[i + 0] / dv[i + 0];
+        auto pl = p[i - 1];
+        auto pr = p[i + 0];
+        return riemann_hlle(pl, pr, ul, ur, vf[i]);
+    }).cache();
+
+    auto du = ic[interior_cells].map([rf, da, g, fhat, p] HD (int i)
+    {
+        auto rm = rf[i + 0];
+        auto rp = rf[i + 1];
+        auto am = da[i + 0];
+        auto ap = da[i + 1];
+        auto fm = fhat[i + 0];
+        auto fp = fhat[i + 1];
+        auto udot = g.source_terms(p[i], rm, rp);
+        return fm * am - fp * ap + udot;
+    }) * dt;
+
+    return State{
+        state.time + dt,
+        state.iter + 1.0,
+        set_bc(u.add(du), config, 1),
+    };
+}
+
+
+
+
+template<class G>
+static State next_plm(const State& state, const Config& config, prim_array_t& prim_array, double dt, int prim_dirty)
+{
+    
+    auto u = state.cons;
+    auto g = G(config, state.time);
+    auto cells_space = g.cells_space();
+    auto a = cells_space.expand(2);
+    auto gz = range(a);
+    auto ic = range(a);
+    auto iv = range(a.nudge(vec(0), vec(1)));
+    auto rf = iv.map([g] HD (int i) { return g.face_position(i); });
+    auto vf = iv.map([g] HD (int i) { return g.face_velocity(i); });
+    auto da = iv.map([g] HD (int i) { return g.face_area(i); });
+    auto gradient_cells = gz.space().contract(1);
+    auto interior_cells = ic.space().contract(2);
+    auto interior_faces = iv.space().contract(2);
+    auto plm_theta = config.theta;
+    if (prim_dirty) {
+        update_prim(state, g, prim_array);
+    }
+    
+    auto model = initial_model_t(config);
+    auto model_p = gz.map([=] HD (int i)
+    {
+        auto x = g.cell_position(i);
+        return model.initial_primitive(x,state.time);
+    });
+    auto p = model_p.insert(prim_array);
+    //auto p = prim_array;
+
+    auto grad = ic[gradient_cells].map([p, plm_theta] HD (int i)
+    {
+        auto pl = p[i - 1];
+        auto pc = p[i + 0];
+        auto pr = p[i + 1];
+        auto gc = prim_t{};
+
+        for (int n = 0; n < 3; ++n)
+        {
+            gc[n] = plm_minmod(pl[n], pc[n], pr[n], plm_theta);
+        }
+        return gc;
+    }).cache();
+    
+    
+    auto fhat = iv[interior_faces].map([p, vf, grad] HD (int i)
+    {
+        auto pl = p[i - 1] + grad[i - 1] * 0.5;
+        auto pr = p[i + 0] - grad[i + 0] * 0.5;
+        auto ul = prim_to_cons(pl);
+        auto ur = prim_to_cons(pr);
+        return riemann_hlle(pl, pr, ul, ur, vf[i]);
+    }).cache();
+
+    auto du = ic[interior_cells].map([rf, da, g, fhat, p] HD (int i)
+    {
+        auto rm = rf[i + 0];
+        auto rp = rf[i + 1];
+        auto am = da[i + 0];
+        auto ap = da[i + 1];
+        auto fm = fhat[i + 0];
+        auto fp = fhat[i + 1];
+        auto udot = g.source_terms(p[i], rm, rp);
+        return fm * am - fp * ap + udot;
+    }) * dt;
+    
+    auto u1 = u.add(du);
+    return State{
+        state.time + dt,
+        state.iter + 1.0,
+        u1.cache(),
+    };
+}
+
+
+
+
+template<class Geometry>
+static void update_state(State& state, const Config& config)
+{
+    static prim_array_t p;
+    auto next = std::function<State(State&, const Config&, prim_array_t&, double, int)>();
+
+    if (config.method == "pcm") {
+        next = next_pcm<Geometry>;
+    }
+    if (config.method == "plm") {
+        next = next_plm<Geometry>;
+    }
+    if (! next) {
+        throw std::runtime_error(format("unrecognized method '%s'", config.method.data()));
+    }
+
+    // Wavespeed calculation is presently disabled, max wave speed of c is
+    // assumed.
+    //
+    // auto wavespeed = [] HD (prim_t p) -> double
+    // {
+    //     auto a = outer_wavespeeds(p, 0);
+    //     return max2(fabs(a[0]), fabs(a[1]));
+    // };
+    // update_prim(state, p);
+
+    auto g = Geometry(config, state.time);
+    auto dx = g.face_position(1) - g.face_position(0);
+    auto dt = dx * config.cfl;
+    auto s0 = state;
+
+    switch (config.rk)
+    {
+        case 1: {
+            state = next(s0, config, p, dt, 1);
+            break;
+        }
+        case 2: {
+            auto s1 = average(s0, next(s0, config, p, dt, 1), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./2);
+            state = s2;
+            break;
+        }
+        case 3: {
+            auto s1 = average(s0, next(s0, config, p, dt, 1), 1./1);
+            auto s2 = average(s0, next(s1, config, p, dt, 1), 1./4);
+            auto s3 = average(s0, next(s2, config, p, dt, 1), 2./3);
+            state = s3;
+            break;
+        }
+    }
+}
+
+
+
+
+/**
+ * 
+ */
+class Blast : public Simulation<Config, State, Product>
+{
+public:
+    const char* name() const override
+    {
+        return "blast";
+    }
+    const char* author() const override
+    {
+        return "Jonathan Zrake (Clemson)";
+    }
+    const char* description() const override
+    {
+        return "GPU-accelerated hydrodynamics code for relativistic explosions";
+    }
+    const char* output_directory() const override
+    {
+        return config.outdir.data();
+    }
+    bool use_persistent_session() const override
+    {
+        return false;
+    }
+    double get_time(const State& state) const override
+    {
+        return state.time;
+    }
+    uint get_iteration(const State& state) const override
+    {
+        return round(state.iter);
+    }
+    void initial_state(State& state) const override
+    {
+        auto model = initial_model_t(config);
+        auto g = grid_geometry_t(config, 0.0);
+        auto ic = range(g.cells_space());
+        auto u = ic.map([=] HD (int i) {
+            auto xc = g.cell_position(i);
+            auto dv = g.cell_volume(i);
+            auto p = model.initial_primitive(xc,0.0);
+            auto u = prim_to_cons(p);
+            return u * dv;
+        });
         state.time = 0.0;
         state.iter = 0.0;
-        state.cons = cell_coordinates(config).map(initial_conserved).cache();
+        state.cons = u.cache();
     }
     void update(State& state) const override
     {
         switch (coords_from_string(config.coords))
         {
-        case CoordinateSystem::planar: return update_planar(state);
-        case CoordinateSystem::spherical: return update_spherical(state);
+        case CoordinateSystem::planar:
+            return update_state<planar_geometry_t>(state, config);
+        case CoordinateSystem::spherical:
+            return update_state<spherical_geometry_t>(state, config);
         }
-    }
-    void update_planar(State& state) const
-    {
-        update_state<planar_geometry_t>(state, config);
-    }
-    void update_spherical(State& state) const
-    {
-        update_state<spherical_geometry_t>(state, config);
     }
     bool should_continue(const State& state) const override
     {
@@ -889,21 +1025,41 @@ public:
         case 1: return "gamma_beta";
         case 2: return "gas_pressure";
         case 3: return "cell_coordinate";
+        case 4: return "cell_velocity";
+        case 5: return "cell_lorentz_factor";
+        case 6: return "energy";
+        case 7: return "sound_speed_squared";
         }
         return nullptr;
     }
     Product compute_product(const State& state, uint column) const override
     {
+        auto g = grid_geometry_t(config, state.time);
+        auto us = state.cons;
+        auto ic = range(g.cells_space());
+        auto xc = ic.map([g] HD (int i) { return g.cell_position(i); });
+        auto vc = ic.map([g] HD (int i) { return g.face_velocity(i); });
+        auto dv = ic.map([g] HD (int i) { return g.cell_volume(i); });
         auto cons_field = [] (uint n) {
             return [n] HD (cons_t u) {
                 return cons_to_prim(u).get()[n];
             };
         };
+        auto cons_field_whole = [] () {
+            return [] HD (cons_t u) {
+                return cons_to_prim(u).get();
+            };
+        };
+        auto prim = state.cons.map(cons_field_whole());
         switch (column) {
-        case 0: return state.cons.map(cons_field(0)).cache();
-        case 1: return state.cons.map(cons_field(1)).cache();
-        case 2: return state.cons.map(cons_field(2)).cache();
-        case 3: return cell_coordinates(config).cache();
+        case 0: return (state.cons / dv).map(cons_field(0)).cache();
+        case 1: return (state.cons / dv).map(cons_field(1)).cache();
+        case 2: return (state.cons / dv).map(cons_field(2)).cache();
+        case 3: return xc.cache();
+        case 4: return vc.cache();
+        case 5: return vc.map([] HD (double v) { return 1.0 / sqrt(1.0 - v * v); }).cache();
+        case 6: return us.map([] HD (cons_t u) { return u[2]; }).cache();
+        case 7: return prim.map([] HD (prim_t p) { return sound_speed_squared(p); }).cache();
         }
         return {};
     }
@@ -1093,6 +1249,7 @@ public:
         static bool show_style = false;
         static bool auto_step = false;
         static bool draw_markers = true;
+        static int x_axis_item = 0;
 
         ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -1129,16 +1286,27 @@ public:
         ImGui::SameLine();
         ImGui::Text("%s", status.message.data);
 
+        ImGui::SameLine();
         if (ImGui::Button("Style")) {
             show_style = true;
         }
 
+        ImGui::SameLine();
+        ImGui::Combo("X Axis", &x_axis_item, "Radius\0Cell Velocity\0Cell Lorentz Factor\0\0");
+
         if (ImPlot::BeginPlot("##blast", ImVec2(-1.0, -1.0)))
         {
-            auto x = status.products.at("cell_coordinate");
+            auto x_key = std::string();
+
+            switch (x_axis_item) {
+            case 0: x_key = "cell_coordinate"; break;
+            case 1: x_key = "cell_velocity"; break;
+            case 2: x_key = "cell_lorentz_factor"; break;
+            }
+            auto x = status.products.at(x_key);
 
             for (const auto& [name, y] : status.products) {
-                if (name != "cell_coordinate") {
+                if (name != "cell_coordinate" && name != "cell_velocity" && name != "cell_lorentz_factor") {
                     if (draw_markers) {
                         ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle);
                         ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
