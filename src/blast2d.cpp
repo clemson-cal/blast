@@ -26,6 +26,8 @@ SOFTWARE.
 #include <functional>
 #include "vapor/vapor.hpp"
 #include "envelope.hpp"
+#include <stdio.h>
+#include <iostream>
 
 
 
@@ -68,7 +70,7 @@ HD dvec_t<S> plm_minmod(
     double plm_theta)
 {
     auto res = dvec_t<S>{};
-    for (int i = 0; i < S; ++i)
+    for (uint i = 0; i < S; ++i)
     {
         res[i] = plm_minmod(yl[i], yc[i], yr[i], plm_theta);
     }
@@ -127,6 +129,10 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
 {
     auto newton_iter_max = 50;
     auto error_tolerance = 1e-12 * (cons[0] + cons[3]);
+    if (error_tolerance <= 0)
+    {
+        error_tolerance = 1e-12;
+    }
     auto gm = gamma_law;
     auto m = cons[0];
     auto tau = cons[3];
@@ -154,7 +160,8 @@ HD static auto cons_to_prim(cons_t cons, double p=0.0) -> optional_t<prim_t>
         if (fabs(f) < error_tolerance)
         {
             if (p <= 0.0) {
-                return none<prim_t>();                
+                p = 0;
+                //return none<prim_t>();
             }
             w0 = w;
             break;
@@ -236,18 +243,29 @@ HD static auto riemann_hlle(prim_t pl, prim_t pr, cons_t ul, cons_t ur, int axis
 enum class Setup
 {
     uniform,
+    no_bg,
     wind,
     envelope,
 };
 static Setup setup_from_string(const std::string& name)
 {
     if (name == "uniform") return Setup::uniform;
+    if (name == "no_bg") return Setup::no_bg;
     if (name == "wind") return Setup::wind;
     if (name == "envelope") return Setup::envelope;
     throw std::runtime_error("unknown setup " + name);
 }
 
 
+enum class Ejecta {  // new enumeration class so new ejecta types can be implemented like the setups can
+    shell,
+    nozzle,
+};
+static Ejecta ejecta_from_string(const std::string& name) {
+    if (name == "shell") return Ejecta::shell;
+    if (name == "nozzle") return Ejecta::nozzle;
+    throw std::runtime_error("unknown ejecta type: " + name);
+}
 
 
 /**
@@ -267,10 +285,12 @@ struct Config
     double dx = 1e-2;
     double entropy = 1e-3;
     double shell_w = 0.1; // shell width over radius
-    double shell_q = 0.1; // shell opening angle
-    double shell_u = 10.; // four-velocity at the leading edge of the shell
+    double ejecta_q = 0.1; // ejecta opening angle
+    double ejecta_u = 10.; // four-velocity at the leading edge of the ejecta
     double shell_r = 0.1; // radius of the leading edge of the shell at the start time
     double shell_n = 1.0; // comoving density at the leading edge of the shell
+    double nozzle_delta_t = 1.0; // nozzle ejection time scale
+    double nozzle_m_dot = 1.0; // nozzle mass outflow rate
     double mesh_t0 = 0.0; // the time at which the radial mesh surfaces were at r=0
     double mesh_r0 = 1.0; // the mesh radius which expands at v=c
     double polar_extent = 0.125; // means pi / 8; 1.0 means pole-to-pole
@@ -279,6 +299,7 @@ struct Config
     std::vector<uint> ts = {0, 1, 2, 3};
     std::string outdir = ".";
     std::string setup = "uniform";
+    std::string ejecta = "shell";
 };
 VISITABLE_STRUCT(Config,
     fold,
@@ -293,10 +314,12 @@ VISITABLE_STRUCT(Config,
     dx,
     entropy,
     shell_w,
-    shell_q,
-    shell_u,
+    ejecta_q,
+    ejecta_u,
     shell_r,
     shell_n,
+    nozzle_delta_t,
+    nozzle_m_dot,
     mesh_t0,
     mesh_r0,
     polar_extent,
@@ -304,84 +327,14 @@ VISITABLE_STRUCT(Config,
     sp,
     ts,
     outdir,
-    setup
+    setup,
+    ejecta
 );
 
 
 
 
-struct initial_model_t
-{
-    initial_model_t(const Config& config)
-    : setup(setup_from_string(config.setup))
-    , include_shell(config.shell_u != 0.0)
-    , tstart(config.tstart)
-    , entropy(config.entropy)
-    , shell_w(config.shell_w)
-    , shell_q(config.shell_q)
-    , shell_u(config.shell_u)
-    , shell_r(config.shell_r)
-    , shell_n(config.shell_n)
-    {
-    }
-    HD prim_t initial_primitive(double r, double q, double t) const
-    {
-        switch (setup)
-        {
-        case Setup::uniform: {
-            // Uniform gas (tests spherical geometry source terms)
-            //
-            return add_shell(r, q, t, vec(1.0, 0.0, 0.0, entropy));
-        }
-        case Setup::wind: {
-            // Steady-state cold wind, sub-relativistic velocity
-            //
-            auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
-            auto u = 1.0; // wind gamma-beta
-            auto d = f / (r * r * u);
-            auto p = entropy * d;
-            return add_shell(r, q, t, vec(d, u, 0.0, p));
-        }
-        case Setup::envelope: {
-            // A relativistic envelope based on the BNS merger scenario
-            // 
-            auto envelope = envelope_t();
-            auto m = envelope.shell_mass_rt(r, t);
-            auto d = envelope.shell_density_mt(m, t);
-            auto u = envelope.shell_gamma_beta_m(m);
-            auto p = entropy * d;
-            return add_shell(r, q, t, vec(d, u, 0.0, p));
-        }
-        default: return {};
-        }
-    }
-    HD prim_t add_shell(double r, double q, double t, prim_t bg_prim) const
-    {
-        if (r < shell_r && t == tstart && include_shell) {
-            auto shell_p = entropy * shell_n;
-            auto shell_prim = prim_t{
-                shell_n,
-                shell_u,
-                0.0,
-                shell_p,
-            };
-            auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / shell_q, 2.0));
-            return bg_prim * (1.0 - y) + shell_prim * y;
-        }
-        else {
-            return bg_prim;
-        }
-    }
-    Setup setup;
-    bool include_shell;
-    double tstart;
-    double entropy;
-    double shell_w; // shell width over radius
-    double shell_q; // shell opening angle
-    double shell_u; // four-velocity at the leading edge of the shell
-    double shell_r; // radius of the leading edge of the shell at the start time
-    double shell_n; // comoving density at the leading edge of the shell
-};
+
 
 
 
@@ -566,6 +519,99 @@ struct log_spherical_geometry_t
 using Geometry = log_spherical_geometry_t;
 
 
+struct initial_model_t // initial model methods now take index vector; used for nozzle ejecta
+{
+    initial_model_t(const Config& config)
+    : setup(setup_from_string(config.setup))
+    , ejecta(ejecta_from_string(config.ejecta))
+    , include_shell(config.ejecta_u != 0.0)
+    , tstart(config.tstart)
+    , entropy(config.entropy)
+    , shell_w(config.shell_w)
+    , ejecta_q(config.ejecta_q)
+    , ejecta_u(config.ejecta_u)
+    , shell_r(config.shell_r)
+    , shell_n(config.shell_n)
+    , nozzle_delta_t(config.nozzle_delta_t) 
+    , nozzle_m_dot(config.nozzle_m_dot){}
+    HD prim_t initial_primitive(ivec_t<2> i, double r, double q, double t) const 
+    {
+        switch (setup)
+        {
+        case Setup::uniform: {
+            // Uniform gas (tests spherical geometry source terms)
+            //
+            return add_ejecta(i, r, q, t, vec(1.0, 0.0, 0.0, entropy));
+        }
+        case Setup::no_bg: {
+            return add_ejecta(i, r, q, t, vec(0.0, 0.0, 0.0, 0.0));
+        }
+        case Setup::wind: {
+            // Steady-state cold wind, sub-relativistic velocity
+            //
+            auto f = 1.0; // mass outflow rate, per steradian, r^2 rho u
+            auto u = 1.0; // wind gamma-beta
+            auto d = f / (r * r * u);
+            auto p = entropy * d;
+            return add_ejecta(i, r, q, t, vec(d, u, 0.0, p));
+        }
+        case Setup::envelope: {
+            // A relativistic envelope based on the BNS merger scenario
+            // 
+            auto envelope = envelope_t();
+            auto m = envelope.shell_mass_rt(r, t);
+            auto d = envelope.shell_density_mt(m, t);
+            auto u = envelope.shell_gamma_beta_m(m);
+            auto p = entropy * d;
+            return add_ejecta(i, r, q, t, vec(d, u, 0.0, p));
+        }
+        default: return {};
+        }
+    }
+    
+    HD prim_t add_ejecta(ivec_t<2> i, double r, double q, double t, prim_t bg_prim) const {
+        switch (ejecta) {
+            case Ejecta::shell:
+                if (r < shell_r && t == tstart && include_shell) {
+                    auto shell_p = 0.01 * shell_n;
+                    auto shell_prim = prim_t{
+                        shell_n,
+                        ejecta_u,
+                        0.0,
+                        shell_p,
+                    };
+                    auto y = exp(-pow((r / shell_r - 1.0) / shell_w, 2.0)) * exp(-pow(q / ejecta_q, 2.0));
+                    return bg_prim * (1.0 - y) + shell_prim * y;
+                }
+                else {
+                    return bg_prim;
+                }
+            case Ejecta::nozzle:
+                if ((i[0] < 0) && (include_shell)){
+                    auto d = nozzle_m_dot / (r * r * ejecta_u);
+                    auto p = 0.01 * d;
+                    auto y = 128 / 3 * pow((t - tstart)/nozzle_delta_t,3)*exp(-4*((t - tstart)/nozzle_delta_t))*exp(-pow(q / ejecta_q, 2.0));
+                    return bg_prim * (1.0 - y) + vec(d, ejecta_u, 0.0, p) * y;
+                } else {
+                    return bg_prim;
+                }
+            default: return bg_prim;
+        }
+    }
+    Setup setup;
+    Ejecta ejecta;
+    bool include_shell;
+    double tstart;
+    double entropy;
+    double shell_w; // shell width over radius
+    double ejecta_q; // shell opening angle
+    double ejecta_u; // four-velocity at the leading edge of the shell
+    double shell_r; // radius of the leading edge of the shell at the start time
+    double shell_n; // comoving density at the leading edge of the shell
+    double nozzle_delta_t;
+    double nozzle_m_dot;
+};
+
 
 
 /**
@@ -651,7 +697,7 @@ static State next(const State& state, const Config& config, prim_array_t& prim_a
     auto model_p = indices(cells_space.expand(uvec(2, 2))).map([=] HD (ivec_t<2> i)
     {
         auto x = g.cell_position(i, t);
-        return model.initial_primitive(x[0], x[1], t);
+        return model.initial_primitive(i, x[0], x[1], t);
     });
     auto p = model_p.insert(prim_array);
 
@@ -796,7 +842,7 @@ public:
         auto u = indices(g.cells_space()).map([=] HD (ivec_t<2> i) {
             auto dv = g.cell_volume(i, t);
             auto xc = g.cell_position(i, t);
-            auto p = model.initial_primitive(xc[0], xc[1], t);
+            auto p = model.initial_primitive(i, xc[0], xc[1], t);
             auto u = prim_to_cons(p);
             return u * dv;
         });
